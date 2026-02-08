@@ -11,6 +11,7 @@ Unlike headless-only approaches that spawn a new CODESYS process per command, th
 - **File-based IPC** — proven approach using atomic file writes and a Python watcher script
 - **Command serialization** — async mutex ensures one command at a time
 - **Health monitoring** — detects CODESYS crashes and reports state
+- **28 MCP tools** — project management, POU authoring, structured compiler diagnostics, runtime monitoring, library management
 - **Drop-in replacement** — same MCP tool names and parameters as `@codesys/mcp-toolkit`
 
 ## Installation
@@ -95,9 +96,10 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 | `open_project` | Open an existing CODESYS project file |
 | `create_project` | Create a new project from the standard template |
 | `save_project` | Save the currently open project |
-| `compile_project` | Build the primary application (120s timeout) |
+| `compile_project` | Build the primary application with structured error output (120s timeout) |
+| `get_compile_messages` | Retrieve last compiler messages without triggering a new build |
 
-### POU Tools
+### POU / Code Authoring Tools
 
 | Tool | Description |
 |------|-------------|
@@ -105,6 +107,31 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 | `set_pou_code` | Set declaration and/or implementation code |
 | `create_property` | Create a property within a Function Block |
 | `create_method` | Create a method within a Function Block |
+| `create_dut` | Create a Data Unit Type (Structure, Enumeration, Union, Alias) |
+| `create_gvl` | Create a Global Variable List with optional initial declaration |
+| `create_folder` | Create an organizational folder in the project tree |
+| `delete_object` | Delete any project object (POU, DUT, GVL, folder, etc.) |
+| `rename_object` | Rename any project object |
+| `get_all_pou_code` | Bulk read all declaration and implementation code in the project (120s timeout) |
+
+### Online / Runtime Tools
+
+| Tool | Description |
+|------|-------------|
+| `connect_to_device` | Login to the PLC runtime (requires configured device/gateway) |
+| `disconnect_from_device` | Logout from the PLC runtime |
+| `get_application_state` | Check if the PLC application is running, stopped, or in exception |
+| `read_variable` | Read a live variable value from the running PLC (e.g., `PLC_PRG.bMotorRunning`) |
+| `write_variable` | Write/force a variable value on the running PLC |
+| `download_to_device` | Download compiled application to PLC (attempts online change first, 120s timeout) |
+| `start_stop_application` | Start or stop the PLC application |
+
+### Library Management Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_project_libraries` | List all libraries referenced in the project with version info |
+| `add_library` | Add a library reference to the project |
 
 ## MCP Resources
 
@@ -159,10 +186,16 @@ If the watcher doesn't signal ready within 60 seconds, check:
 - Try `--verbose` for detailed logging
 
 **UI briefly pauses during commands (persistent mode)**
-The v0.3.0 watcher uses a background thread that marshals work onto the UI thread, so the UI stays responsive between commands. During synchronous CODESYS API calls (compile, project open), the UI may briefly pause — this is expected and normal. If a command hangs, check the CODESYS messages window for modal dialogs or errors.
+The watcher uses a background thread that marshals work onto the UI thread, so the UI stays responsive between commands. During synchronous CODESYS API calls (compile, project open), the UI may briefly pause — this is expected and normal. If a command hangs, check the CODESYS messages window for modal dialogs or errors.
 
 **Command timeout**
-Default is 60s (120s for compile). Increase with `--timeout <ms>`. Check CODESYS messages window for errors.
+Default is 60s (120s for compile and download). Increase with `--timeout <ms>`. Check CODESYS messages window for errors.
+
+**Online/runtime tools fail**
+The online tools (`connect_to_device`, `read_variable`, etc.) require:
+- A device/gateway configured in the CODESYS project
+- The project to be compiled successfully before connecting
+- A reachable PLC or CODESYS SoftPLC runtime
 
 ## Development
 
@@ -188,14 +221,14 @@ npm run test:watch
 ```
 src/
   bin.ts              CLI entry point
-  server.ts           MCP tool/resource registration
+  server.ts           MCP tool/resource registration (28 tools, 3 resources)
   launcher.ts         CODESYS process management
   ipc.ts              File-based IPC transport
   headless.ts         Headless fallback executor
   script-manager.ts   Python template loading + interpolation
   types.ts            Shared TypeScript types
   logger.ts           Structured stderr logging
-  scripts/            Python scripts (watcher + 13 tool scripts)
+  scripts/            Python scripts (watcher + 2 helpers + 28 tool scripts)
 tests/
   unit/               Unit tests (IPC, script manager, launcher)
   integration/        Integration tests (script pipeline, manual CODESYS tests)

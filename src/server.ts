@@ -433,7 +433,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'compile_project',
-    'Compiles (Builds) the primary application within a CODESYS project.',
+    'Compiles (Builds) the primary application within a CODESYS project. Returns structured compiler messages (errors, warnings) when available.',
     {
       projectFilePath: z.string().describe("Path to the project file containing the application to compile."),
     },
@@ -445,21 +445,602 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       const result = await executor.executeScript(script, 120_000); // 120s timeout for compile
 
       const success = result.success && result.output.includes('SCRIPT_SUCCESS');
-      const hasCompileErrors =
-        result.output.includes('Compile complete --') &&
-        !/ 0 error\(s\),/.test(result.output);
 
-      let message = success
-        ? `Compilation initiated for ${args.projectFilePath}. Check CODESYS messages for results.`
-        : `Failed initiating compilation for ${args.projectFilePath}. Output:\n${result.output}`;
+      // Parse structured compile messages if present
+      let compileMessages: Array<{ severity: string; text: string; object?: string; line?: number }> = [];
+      const msgStartMarker = '### COMPILE_MESSAGES_START ###';
+      const msgEndMarker = '### COMPILE_MESSAGES_END ###';
+      const msgStartIdx = result.output.indexOf(msgStartMarker);
+      const msgEndIdx = result.output.indexOf(msgEndMarker);
+      if (msgStartIdx !== -1 && msgEndIdx !== -1 && msgStartIdx < msgEndIdx) {
+        try {
+          const jsonStr = result.output.substring(msgStartIdx + msgStartMarker.length, msgEndIdx).trim();
+          compileMessages = JSON.parse(jsonStr);
+        } catch {
+          // JSON parse failed, ignore
+        }
+      }
+
+      // Build response message
+      let message: string;
       let isError = !success;
 
-      if (success && hasCompileErrors) {
-        message += ' WARNING: Build command reported errors.';
-        isError = true;
+      if (!success) {
+        message = `Failed initiating compilation for ${args.projectFilePath}. Output:\n${result.output}`;
+      } else if (compileMessages.length > 0) {
+        const errors = compileMessages.filter((m) => m.severity === 'error');
+        const warnings = compileMessages.filter((m) => m.severity === 'warning');
+        const formatMsg = (m: { severity: string; text: string; object?: string; line?: number }) => {
+          const loc = m.object ? (m.line != null ? ` [${m.object}:${m.line}]` : ` [${m.object}]`) : '';
+          return `${m.severity.toUpperCase()}: ${m.text}${loc}`;
+        };
+
+        message = `Compilation complete for ${args.projectFilePath}.\n`;
+        message += `${errors.length} error(s), ${warnings.length} warning(s).\n`;
+        if (errors.length > 0) {
+          message += '\nErrors:\n' + errors.map(formatMsg).join('\n');
+          isError = true;
+        }
+        if (warnings.length > 0) {
+          message += '\nWarnings:\n' + warnings.map(formatMsg).join('\n');
+        }
+      } else {
+        // No structured messages available — fall back to old behavior
+        message = `Compilation initiated for ${args.projectFilePath}.`;
+        const hasCompileErrors =
+          result.output.includes('Compile complete --') &&
+          !/ 0 error\(s\),/.test(result.output);
+        if (hasCompileErrors) {
+          message += ' WARNING: Build command reported errors. Use get_compile_messages for details.';
+          isError = true;
+        }
       }
 
       return { content: [{ type: 'text' as const, text: message }], isError };
+    }
+  );
+
+  s.tool(
+    'get_compile_messages',
+    'Retrieves the last compiler messages (errors, warnings) without triggering a new build. Useful after editing code to check remaining errors.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'get_compile_messages', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      if (!success) {
+        return formatToolResponse(result, '');
+      }
+
+      // Parse structured messages
+      let compileMessages: Array<{ severity: string; text: string; object?: string; line?: number }> = [];
+      const msgStartMarker = '### COMPILE_MESSAGES_START ###';
+      const msgEndMarker = '### COMPILE_MESSAGES_END ###';
+      const msgStartIdx = result.output.indexOf(msgStartMarker);
+      const msgEndIdx = result.output.indexOf(msgEndMarker);
+      if (msgStartIdx !== -1 && msgEndIdx !== -1 && msgStartIdx < msgEndIdx) {
+        try {
+          const jsonStr = result.output.substring(msgStartIdx + msgStartMarker.length, msgEndIdx).trim();
+          compileMessages = JSON.parse(jsonStr);
+        } catch {
+          // JSON parse failed
+        }
+      }
+
+      if (compileMessages.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: 'No compile messages found. The message API may not be available in this CODESYS version.' }],
+          isError: false,
+        };
+      }
+
+      const errors = compileMessages.filter((m) => m.severity === 'error');
+      const warnings = compileMessages.filter((m) => m.severity === 'warning');
+      const formatMsg = (m: { severity: string; text: string; object?: string; line?: number }) => {
+        const loc = m.object ? (m.line != null ? ` [${m.object}:${m.line}]` : ` [${m.object}]`) : '';
+        return `${m.severity.toUpperCase()}: ${m.text}${loc}`;
+      };
+
+      let message = `${errors.length} error(s), ${warnings.length} warning(s), ${compileMessages.length} total message(s).\n`;
+      if (errors.length > 0) {
+        message += '\nErrors:\n' + errors.map(formatMsg).join('\n');
+      }
+      if (warnings.length > 0) {
+        message += '\nWarnings:\n' + warnings.map(formatMsg).join('\n');
+      }
+      const others = compileMessages.filter((m) => m.severity !== 'error' && m.severity !== 'warning');
+      if (others.length > 0) {
+        message += '\nOther:\n' + others.map(formatMsg).join('\n');
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: message }],
+        isError: errors.length > 0,
+      };
+    }
+  );
+
+  // ─── Project Structure Tools ──────────────────────────────────────────
+
+  s.tool(
+    'create_dut',
+    'Creates a new Data Unit Type (DUT) — structure, enumeration, union, or alias — within the specified CODESYS project.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      name: z.string().describe("Name for the new DUT (must be a valid IEC identifier)."),
+      dutType: z.string().describe("Type of DUT: Structure, Enumeration, Union, or Alias."),
+      parentPath: z.string().describe("Relative path under project root or application (e.g., 'Application')."),
+    },
+    async (args: { projectFilePath: string; name: string; dutType: string; parentPath: string }) => {
+      const escProjPath = resolvePath(args.projectFilePath, workspaceDir);
+      const sanParentPath = sanitizePouPath(args.parentPath);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'create_dut',
+        {
+          PROJECT_FILE_PATH: escProjPath,
+          DUT_NAME: args.name.trim(),
+          DUT_TYPE_STR: args.dutType,
+          PARENT_PATH: sanParentPath,
+        },
+        ['ensure_project_open', 'find_object_by_path']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `DUT '${args.name}' (${args.dutType}) created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+      );
+    }
+  );
+
+  s.tool(
+    'create_gvl',
+    'Creates a new Global Variable List (GVL) within the specified CODESYS project.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      name: z.string().describe("Name for the new GVL (must be a valid IEC identifier)."),
+      parentPath: z.string().describe("Relative path under project root or application (e.g., 'Application')."),
+      declarationCode: z.string().optional().describe("Optional initial declaration code for the GVL (VAR_GLOBAL...END_VAR)."),
+    },
+    async (args: { projectFilePath: string; name: string; parentPath: string; declarationCode?: string }) => {
+      const escProjPath = resolvePath(args.projectFilePath, workspaceDir);
+      const sanParentPath = sanitizePouPath(args.parentPath);
+      const sanDecl = (args.declarationCode ?? '').replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
+      const script = scriptManager.prepareScriptWithHelpers(
+        'create_gvl',
+        {
+          PROJECT_FILE_PATH: escProjPath,
+          GVL_NAME: args.name.trim(),
+          PARENT_PATH: sanParentPath,
+          DECLARATION_CONTENT: sanDecl,
+        },
+        ['ensure_project_open', 'find_object_by_path']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `GVL '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+      );
+    }
+  );
+
+  s.tool(
+    'create_folder',
+    'Creates an organizational folder within the CODESYS project tree.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      folderName: z.string().describe("Name for the new folder."),
+      parentPath: z.string().describe("Relative path under project root or application (e.g., 'Application')."),
+    },
+    async (args: { projectFilePath: string; folderName: string; parentPath: string }) => {
+      const escProjPath = resolvePath(args.projectFilePath, workspaceDir);
+      const sanParentPath = sanitizePouPath(args.parentPath);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'create_folder',
+        {
+          PROJECT_FILE_PATH: escProjPath,
+          FOLDER_NAME: args.folderName.trim(),
+          PARENT_PATH: sanParentPath,
+        },
+        ['ensure_project_open', 'find_object_by_path']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Folder '${args.folderName}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+      );
+    }
+  );
+
+  s.tool(
+    'delete_object',
+    'Deletes a project object (POU, DUT, GVL, folder, etc.) from the CODESYS project. WARNING: This is destructive and cannot be undone.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      objectPath: z.string().describe("Full relative path to the object to delete (e.g., 'Application/MyPOU')."),
+    },
+    async (args: { projectFilePath: string; objectPath: string }) => {
+      const escProjPath = resolvePath(args.projectFilePath, workspaceDir);
+      const sanObjPath = sanitizePouPath(args.objectPath);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'delete_object',
+        {
+          PROJECT_FILE_PATH: escProjPath,
+          OBJECT_PATH: sanObjPath,
+        },
+        ['ensure_project_open', 'find_object_by_path']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Object '${sanObjPath}' deleted from ${args.projectFilePath}. Project saved.`
+      );
+    }
+  );
+
+  s.tool(
+    'rename_object',
+    'Renames a project object (POU, DUT, GVL, folder, etc.) in the CODESYS project.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      objectPath: z.string().describe("Full relative path to the object to rename (e.g., 'Application/MyPOU')."),
+      newName: z.string().describe("New name for the object (must be a valid IEC identifier)."),
+    },
+    async (args: { projectFilePath: string; objectPath: string; newName: string }) => {
+      const escProjPath = resolvePath(args.projectFilePath, workspaceDir);
+      const sanObjPath = sanitizePouPath(args.objectPath);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'rename_object',
+        {
+          PROJECT_FILE_PATH: escProjPath,
+          OBJECT_PATH: sanObjPath,
+          NEW_NAME: args.newName.trim(),
+        },
+        ['ensure_project_open', 'find_object_by_path']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Object '${sanObjPath}' renamed to '${args.newName}' in ${args.projectFilePath}. Project saved.`
+      );
+    }
+  );
+
+  s.tool(
+    'get_all_pou_code',
+    'Reads the declaration and implementation code of every POU/DUT/GVL in the project. Returns all code in a single response for bulk review.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'get_all_pou_code', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script, 120_000); // 120s for large projects
+
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      if (!success) {
+        return formatToolResponse(result, '');
+      }
+
+      // Parse the JSON output
+      const codeStartMarker = '### ALL_POU_CODE_START ###';
+      const codeEndMarker = '### ALL_POU_CODE_END ###';
+      const startIdx = result.output.indexOf(codeStartMarker);
+      const endIdx = result.output.indexOf(codeEndMarker);
+
+      if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
+        return {
+          content: [{ type: 'text' as const, text: 'Could not parse POU code output.' }],
+          isError: true,
+        };
+      }
+
+      try {
+        const jsonStr = result.output.substring(startIdx + codeStartMarker.length, endIdx).trim();
+        const allCode: Array<{ path: string; type: string; declaration?: string; implementation?: string }> = JSON.parse(jsonStr);
+
+        if (allCode.length === 0) {
+          return {
+            content: [{ type: 'text' as const, text: 'No POUs with code found in the project.' }],
+            isError: false,
+          };
+        }
+
+        // Format output
+        const sections = allCode.map((item) => {
+          let section = `\n=== ${item.path} (${item.type}) ===`;
+          if (item.declaration) {
+            section += `\n// ----- Declaration -----\n${item.declaration}`;
+          }
+          if (item.implementation) {
+            section += `\n// ----- Implementation -----\n${item.implementation}`;
+          }
+          return section;
+        });
+
+        return {
+          content: [{ type: 'text' as const, text: `${allCode.length} object(s) with code:\n${sections.join('\n')}` }],
+          isError: false,
+        };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: 'Failed to parse POU code JSON.' }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ─── Online/Runtime Tools ─────────────────────────────────────────────
+
+  s.tool(
+    'connect_to_device',
+    'Connects (logs in) to the PLC runtime for the active application. Requires a configured device/gateway in the project.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'connect_to_device', { PROJECT_FILE_PATH: escaped },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script, 60_000);
+      return formatToolResponse(result, `Connected to device for ${args.projectFilePath}.`);
+    }
+  );
+
+  s.tool(
+    'disconnect_from_device',
+    'Disconnects (logs out) from the PLC runtime.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'disconnect_from_device', { PROJECT_FILE_PATH: escaped },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(result, `Disconnected from device for ${args.projectFilePath}.`);
+    }
+  );
+
+  s.tool(
+    'get_application_state',
+    'Gets the current state of the PLC application (running, stopped, exception, etc.).',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'get_application_state', { PROJECT_FILE_PATH: escaped },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script);
+
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      if (!success) {
+        return formatToolResponse(result, '');
+      }
+
+      // Parse state from output
+      const stateMatch = result.output.match(/State:\s*(.+)/);
+      const loggedInMatch = result.output.match(/Logged In:\s*(.+)/);
+      const appMatch = result.output.match(/Application:\s*(.+)/);
+
+      const text = [
+        `Application: ${appMatch ? appMatch[1].trim() : 'Unknown'}`,
+        `State: ${stateMatch ? stateMatch[1].trim() : 'Unknown'}`,
+        `Logged In: ${loggedInMatch ? loggedInMatch[1].trim() : 'Unknown'}`,
+      ].join('\n');
+
+      return {
+        content: [{ type: 'text' as const, text }],
+        isError: false,
+      };
+    }
+  );
+
+  s.tool(
+    'read_variable',
+    'Reads the current value of a variable from the running PLC application. Must be connected first.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      variablePath: z.string().describe("Variable path (e.g., 'PLC_PRG.bMotorRunning', 'GVL.nCounter')."),
+    },
+    async (args: { projectFilePath: string; variablePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'read_variable',
+        {
+          PROJECT_FILE_PATH: escaped,
+          VARIABLE_PATH: args.variablePath.trim(),
+        },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script);
+
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      if (!success) {
+        return formatToolResponse(result, '');
+      }
+
+      const valueMatch = result.output.match(/Value:\s*(.+)/);
+      const typeMatch = result.output.match(/Type:\s*(.+)/);
+      const text = `${args.variablePath} = ${valueMatch ? valueMatch[1].trim() : 'N/A'} (${typeMatch ? typeMatch[1].trim() : 'unknown'})`;
+
+      return {
+        content: [{ type: 'text' as const, text }],
+        isError: false,
+      };
+    }
+  );
+
+  s.tool(
+    'write_variable',
+    'Writes a value to a variable in the running PLC application. Must be connected first.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      variablePath: z.string().describe("Variable path (e.g., 'PLC_PRG.bMotorRunning')."),
+      value: z.string().describe("Value to write (e.g., 'TRUE', '42', '3.14')."),
+    },
+    async (args: { projectFilePath: string; variablePath: string; value: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'write_variable',
+        {
+          PROJECT_FILE_PATH: escaped,
+          VARIABLE_PATH: args.variablePath.trim(),
+          VARIABLE_VALUE: args.value,
+        },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Variable '${args.variablePath}' set to '${args.value}'.`
+      );
+    }
+  );
+
+  s.tool(
+    'download_to_device',
+    'Downloads the compiled application to the PLC device. Attempts online change first, falls back to full download.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'download_to_device', { PROJECT_FILE_PATH: escaped },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script, 120_000);
+      return formatToolResponse(result, `Application downloaded to device for ${args.projectFilePath}.`);
+    }
+  );
+
+  s.tool(
+    'start_stop_application',
+    'Starts or stops the PLC application on the connected device.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      action: z.string().describe("Action to perform: 'start' or 'stop'."),
+    },
+    async (args: { projectFilePath: string; action: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'start_stop_application',
+        {
+          PROJECT_FILE_PATH: escaped,
+          APP_ACTION: args.action.trim(),
+        },
+        ['ensure_project_open', 'ensure_online_connection']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Application ${args.action} executed for ${args.projectFilePath}.`
+      );
+    }
+  );
+
+  // ─── Library Management Tools ─────────────────────────────────────────
+
+  s.tool(
+    'list_project_libraries',
+    'Lists all libraries currently referenced in the CODESYS project.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'list_project_libraries', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      if (!success) {
+        return formatToolResponse(result, '');
+      }
+
+      // Parse libraries JSON
+      const libStartMarker = '### LIBRARIES_START ###';
+      const libEndMarker = '### LIBRARIES_END ###';
+      const startIdx = result.output.indexOf(libStartMarker);
+      const endIdx = result.output.indexOf(libEndMarker);
+
+      if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
+        return {
+          content: [{ type: 'text' as const, text: 'Could not parse libraries output.' }],
+          isError: true,
+        };
+      }
+
+      try {
+        const jsonStr = result.output.substring(startIdx + libStartMarker.length, endIdx).trim();
+        const libraries: Array<{ name: string; version?: string; company?: string }> = JSON.parse(jsonStr);
+
+        if (libraries.length === 0) {
+          return {
+            content: [{ type: 'text' as const, text: 'No libraries found in the project (or Library Manager not found).' }],
+            isError: false,
+          };
+        }
+
+        const lines = libraries.map((lib) => {
+          let line = `- ${lib.name}`;
+          if (lib.version) line += ` (v${lib.version})`;
+          if (lib.company) line += ` [${lib.company}]`;
+          return line;
+        });
+
+        return {
+          content: [{ type: 'text' as const, text: `${libraries.length} library/libraries:\n${lines.join('\n')}` }],
+          isError: false,
+        };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: 'Failed to parse libraries JSON.' }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  s.tool(
+    'add_library',
+    'Adds a library reference to the CODESYS project. The library must be installed in the CODESYS library repository.',
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      libraryName: z.string().describe("Name of the library to add (e.g., 'Standard', 'Util', 'CAA Memory')."),
+    },
+    async (args: { projectFilePath: string; libraryName: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'add_library',
+        {
+          PROJECT_FILE_PATH: escaped,
+          LIBRARY_NAME: args.libraryName.trim(),
+        },
+        ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Library '${args.libraryName}' added to ${args.projectFilePath}. Project saved.`
+      );
     }
   );
 
