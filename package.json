@@ -1,0 +1,52 @@
+{
+  "name": "codesys-mcp-persistent",
+  "version": "0.3.0",
+  "description": "MCP server for CODESYS with persistent UI instance and file-based IPC",
+  "main": "dist/server.js",
+  "bin": {
+    "codesys-mcp-persistent": "dist/bin.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').cpSync('src/scripts','dist/scripts',{recursive:true})\"",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "codesys",
+    "mcp",
+    "plc",
+    "automation",
+    "persistent",
+    "ui"
+  ],
+  "author": "luke-harriman",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luke-harriman/Codesys-MCP.git"
+  },
+  "homepage": "https://github.com/luke-harriman/Codesys-MCP#readme",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "commander": "^11.1.0",
+    "uuid": "^9.0.0",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.1",
+    "@types/uuid": "^9.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.3",
+    "vitest": "^1.6.0"
+  }
+}
