@@ -67,10 +67,19 @@ try:
     else:
         print("WARN: Library Manager not found in project.")
 
-    libs_json = json.dumps(libraries)
-    print("### LIBRARIES_START ###")
-    print(libs_json)
-    print("### LIBRARIES_END ###")
+    for entry in libraries:
+        for k in ('name', 'version', 'company'):
+            if k in entry:
+                entry[k] = _to_unicode(entry[k])
+    libs_json = json.dumps(libraries, ensure_ascii=False)
+    if isinstance(libs_json, unicode):
+        libs_json_bytes = libs_json.encode('utf-8')
+    else:
+        libs_json_bytes = libs_json
+    sys.stdout.write("### LIBRARIES_START ###\n")
+    sys.stdout.write(libs_json_bytes)
+    sys.stdout.write("\n### LIBRARIES_END ###\n")
+    sys.stdout.flush()
     print("Library Count: %d" % len(libraries))
     print("SCRIPT_SUCCESS: Project libraries listed.")
     sys.exit(0)

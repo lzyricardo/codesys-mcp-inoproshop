@@ -51,6 +51,27 @@ export class CodesysLauncher implements ScriptExecutor {
       throw new Error(err);
     }
 
+    // Optional: kill any pre-existing CODESYS.exe before launching. This is
+    // only useful in dev to clean up after an MCP server restart that left
+    // the old CODESYS detached and holding a project lock. It is OFF by
+    // default because killing an unrelated CODESYS instance the user is
+    // working in would lose unsaved work. Opt in with --kill-existing-codesys.
+    if (this.config.killExistingCodesys === true && process.platform === 'win32') {
+      try {
+        const { execSync } = require('child_process');
+        const exeBase = path.basename(this.config.codesysPath);
+        try {
+          execSync(`taskkill /F /T /IM "${exeBase}"`, { timeout: 10_000, stdio: 'ignore' });
+          launcherLog.info(`Killed pre-existing ${exeBase} processes (opted-in via --kill-existing-codesys).`);
+          await this.sleep(2_000);
+        } catch {
+          // Most common failure: no process found. That's the normal case.
+        }
+      } catch (killErr) {
+        launcherLog.warn(`Pre-launch kill skipped: ${killErr}`);
+      }
+    }
+
     this.setState('launching');
     this.sessionId = uuidv4();
     this.ipcDir = path.join(os.tmpdir(), SESSION_DIR_PREFIX, this.sessionId);
@@ -64,31 +85,33 @@ export class CodesysLauncher implements ScriptExecutor {
     });
     await this.ipcClient.ensureDirectories();
 
-    // Prepare watcher script with interpolated IPC path
+    // Prepare watcher script with interpolated IPC path. ScriptManager.
+    // interpolate() now Python-escapes the value, so no manual pre-escape.
     const scriptManager = new ScriptManager();
     const watcherTemplate = scriptManager.loadTemplate('watcher');
-    const ipcPathEscaped = this.ipcDir.replace(/\\/g, '\\\\');
     const watcherContent = scriptManager.interpolate(watcherTemplate, {
-      IPC_BASE_DIR: ipcPathEscaped,
+      IPC_BASE_DIR: this.ipcDir,
     });
 
     // Write interpolated watcher to IPC directory
     const watcherPath = path.join(this.ipcDir, 'watcher.py');
     fs.writeFileSync(watcherPath, watcherContent, 'utf-8');
 
-    // Build CODESYS command
-    const quotedExe = `"${this.config.codesysPath}"`;
-    const profileArg = `--profile="${this.config.profileName}"`;
-    const scriptArg = `--runscript="${watcherPath}"`;
-    const fullCommand = `${quotedExe} ${profileArg} ${scriptArg}`;
+    // Build CODESYS args. Pass argv directly (no shell) so this.process.pid
+    // is the real CODESYS PID rather than a wrapping cmd.exe shell PID.
+    // Node will quote args containing spaces correctly when shell is off.
+    const codesysArgs = [
+      `--profile=${this.config.profileName}`,
+      `--runscript=${watcherPath}`,
+    ];
+    const codesysDir = path.dirname(this.config.codesysPath);
 
-    launcherLog.info(`Spawning: ${fullCommand}`);
+    launcherLog.info(`Spawning: ${this.config.codesysPath} ${codesysArgs.join(' ')}`);
 
     // Spawn CODESYS detached with UI visible
-    const codesysDir = path.dirname(this.config.codesysPath);
-    this.process = spawn(fullCommand, [], {
+    this.process = spawn(this.config.codesysPath, codesysArgs, {
       detached: true,
-      shell: true,
+      shell: false,
       windowsHide: false,
       stdio: 'ignore',
       cwd: codesysDir,

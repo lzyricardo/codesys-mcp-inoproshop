@@ -14,7 +14,7 @@ import traceback
 import json
 
 # --- Configuration ---
-IPC_BASE_DIR = r"{IPC_BASE_DIR}"
+IPC_BASE_DIR = "{IPC_BASE_DIR}"
 COMMANDS_DIR = os.path.join(IPC_BASE_DIR, "commands")
 RESULTS_DIR = os.path.join(IPC_BASE_DIR, "results")
 POLL_INTERVAL = 50  # milliseconds
@@ -38,15 +38,42 @@ try:
         os.makedirs(RESULTS_DIR)
 
     # --- Atomic file write helper ---
+    # Atomic via .NET System.IO.File.Replace on Windows NTFS (no os.remove +
+    # os.rename window where readers see no file at all). Plain rename when
+    # the destination doesn't yet exist. Falls back to retry-based remove +
+    # rename only if the .NET interop is unavailable for some reason.
     def atomic_write(file_path, content):
         tmp_path = file_path + ".tmp"
-        with open(tmp_path, "w") as f:
+        # Accept either bytes or unicode; serialize unicode as utf-8 bytes so
+        # control-plane data with non-ASCII (e.g. project paths in error
+        # strings) survives without a codec mismatch.
+        if isinstance(content, unicode):
+            content = content.encode('utf-8')
+        with open(tmp_path, "wb") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        os.rename(tmp_path, file_path)
+        try:
+            from System.IO import File as _NetFile
+            if os.path.exists(file_path):
+                _NetFile.Replace(tmp_path, file_path, None)
+            else:
+                _NetFile.Move(tmp_path, file_path)
+        except Exception:
+            # Fallback: retry-based remove + rename. Antivirus / Defender
+            # scanning the .tmp file can hold a transient lock that os.remove
+            # surfaces as WinError 32 (sharing violation); a short retry
+            # usually clears it.
+            for attempt in range(5):
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    os.rename(tmp_path, file_path)
+                    return
+                except OSError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
 
     # --- Write ready signal EARLY (before .NET imports) ---
     ready_path = os.path.join(IPC_BASE_DIR, "ready.signal")
@@ -95,6 +122,14 @@ try:
 
     # --- Stop event ---
     _stop_event = ManualResetEvent(False)
+
+    def _do_exec(code, globs):
+        # Top-level helper so IronPython 2.7 doesn't reject this as an
+        # "unqualified exec in a nested function" - the rule fires when
+        # exec sits inside a nested def, but not inside a module-level def.
+        # NOTE: keep this file ASCII-only. IronPython 2.7 rejects non-ASCII
+        # source without a "# -*- coding: utf-8 -*-" header.
+        exec(code, globs)
 
     def process_command(command_file):
         """Process a single command. File I/O on bg thread, exec on primary thread."""
@@ -146,7 +181,7 @@ try:
                     'traceback': traceback,
                     'shutil': __import__('shutil'),
                 }
-                exec(script_code, exec_globals)
+                _do_exec(script_code, exec_globals)
                 output = capture.getvalue()
                 if "SCRIPT_ERROR" in output:
                     success = False
@@ -204,7 +239,7 @@ try:
             }
             done_event.Set()
 
-        # Wait for completion (2 min timeout)
+        # Wait for completion (2 min default timeout for primary-thread exec)
         done_event.WaitOne(120000)
 
         # Write result (file I/O - safe from bg thread)

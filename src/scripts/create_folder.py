@@ -51,29 +51,52 @@ try:
         raise TypeError("Parent object '%s' of type %s does not support create_folder." % (parent_name, type(parent_object).__name__))
 
     print("DEBUG: Calling create_folder: Name='%s'" % FOLDER_NAME)
-    new_folder = parent_object.create_folder(name=FOLDER_NAME)
+    # CODESYS scripting API takes the folder name as a positional argument.
+    # Older versions accepted name=... as a keyword; SP16 raises TypeError.
+    # Note: SP16 returns None on success - the folder IS created, the API
+    # just doesn't hand back the new node. So we don't reject None; instead
+    # we verify post-hoc by walking the parent's children for the new name.
+    new_folder = parent_object.create_folder(FOLDER_NAME)
+    new_folder_name = FOLDER_NAME
 
-    if new_folder:
+    if new_folder is None:
+        # Verify by inspecting children
+        verified = False
+        try:
+            for child in parent_object.get_children(False):
+                child_name = getattr(child, 'get_name', lambda: '')()
+                if child_name == FOLDER_NAME:
+                    verified = True
+                    new_folder = child
+                    break
+        except Exception as verify_err:
+            print("DEBUG: post-create child enumeration raised: %s" % verify_err)
+        if not verified:
+            error_message = (
+                "create_folder returned None and the new folder '%s' was not "
+                "found among parent children. The API may have rejected the "
+                "request silently." % FOLDER_NAME
+            )
+            print(error_message); print("SCRIPT_ERROR: %s" % error_message); sys.exit(1)
+        print("DEBUG: Verified folder '%s' exists after create_folder returned None." % FOLDER_NAME)
+    else:
         new_folder_name = getattr(new_folder, 'get_name', lambda: FOLDER_NAME)()
         print("DEBUG: Folder object created: %s" % new_folder_name)
 
-        try:
-            print("DEBUG: Saving Project...")
-            primary_project.save()
-            print("DEBUG: Project saved successfully after folder creation.")
-        except Exception as save_err:
-            print("ERROR: Failed to save Project after folder creation: %s" % save_err)
-            detailed_error = traceback.format_exc()
-            error_message = "Error saving Project after creating folder '%s': %s\n%s" % (FOLDER_NAME, save_err, detailed_error)
-            print(error_message); print("SCRIPT_ERROR: %s" % error_message); sys.exit(1)
-
-        print("Folder Created: %s" % new_folder_name)
-        print("Parent Path: %s" % PARENT_PATH_REL)
-        print("SCRIPT_SUCCESS: Folder created successfully.")
-        sys.exit(0)
-    else:
-        error_message = "Failed to create folder '%s'. create_folder returned None." % FOLDER_NAME
+    try:
+        print("DEBUG: Saving Project...")
+        primary_project.save()
+        print("DEBUG: Project saved successfully after folder creation.")
+    except Exception as save_err:
+        print("ERROR: Failed to save Project after folder creation: %s" % save_err)
+        detailed_error = traceback.format_exc()
+        error_message = "Error saving Project after creating folder '%s': %s\n%s" % (FOLDER_NAME, save_err, detailed_error)
         print(error_message); print("SCRIPT_ERROR: %s" % error_message); sys.exit(1)
+
+    print("Folder Created: %s" % new_folder_name)
+    print("Parent Path: %s" % PARENT_PATH_REL)
+    print("SCRIPT_SUCCESS: Folder created successfully.")
+    sys.exit(0)
 except Exception as e:
     detailed_error = traceback.format_exc()
     error_message = "Error creating folder '%s' in project '%s': %s\n%s" % (FOLDER_NAME, PROJECT_FILE_PATH, e, detailed_error)

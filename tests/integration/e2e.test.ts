@@ -20,8 +20,9 @@ describe('E2E Script Preparation', () => {
     expect(script).toContain('def ensure_project_open');
     // Should contain the actual open logic
     expect(script).toContain('Project Opened');
-    // Path should appear as-is (no escaping) since templates use r"..." raw strings
-    expect(script).toContain('C:\\Projects\\Test.project');
+    // ScriptManager.interpolate Python-escapes backslashes so the path's
+    // single \'s appear as \\ in the source (Python decodes back to single).
+    expect(script).toContain('C:\\\\Projects\\\\Test.project');
     // Should contain success marker
     expect(script).toContain('SCRIPT_SUCCESS');
   });
@@ -44,25 +45,26 @@ describe('E2E Script Preparation', () => {
     expect(script).toContain('POU_TYPE_STR = "Program"');
   });
 
-  it('set_pou_code script handles pre-escaped code content', () => {
-    // Simulate what server.ts does: manually escape code for triple-quoted strings
-    const declCode = 'VAR\\n  x : INT;\\nEND_VAR';
+  it('set_pou_code script handles code content via central pyEscape', () => {
+    // server.ts now relies on ScriptManager.interpolate to handle Python escape;
+    // callers no longer need to pre-escape backslashes or triple-quotes.
+    const declCode = 'VAR\n  x : INT;\nEND_VAR';
     const implCode = 'x := 42;';
-    const sanDecl = declCode.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
-    const sanImpl = implCode.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
 
     const script = mgr.prepareScriptWithHelpers(
       'set_pou_code',
       {
         PROJECT_FILE_PATH: 'C:\\test.project',
         POU_FULL_PATH: 'Application/MyPOU',
-        DECLARATION_CONTENT: sanDecl,
-        IMPLEMENTATION_CONTENT: sanImpl,
+        DECLARATION_CONTENT: declCode,
+        IMPLEMENTATION_CONTENT: implCode,
       },
-      ['ensure_project_open', 'find_object_by_path']
+      ['_text_utils', 'ensure_project_open', 'find_object_by_path']
     );
     expect(script).toContain('Application/MyPOU');
     expect(script).toContain('x := 42;');
+    // Newlines in the declaration come through as \n escapes in the source.
+    expect(script).toContain('VAR\\n  x : INT;\\nEND_VAR');
   });
 
   it('check_status script has no placeholders after load', () => {

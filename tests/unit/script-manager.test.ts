@@ -22,18 +22,40 @@ describe('ScriptManager', () => {
     expect(result).toBe('hello bar');
   });
 
-  it('passes backslashes through unchanged (raw string templates)', () => {
-    const result = mgr.interpolate('path = r"{PATH}"', {
+  it('Python-escapes backslashes for regular string templates', () => {
+    const result = mgr.interpolate('path = "{PATH}"', {
       PATH: 'C:\\Users\\Test',
     });
-    expect(result).toBe('path = r"C:\\Users\\Test"');
+    // Each \ becomes \\ in source so Python decodes it back to a single \.
+    expect(result).toBe('path = "C:\\\\Users\\\\Test"');
   });
 
-  it('passes triple quotes through unchanged (callers handle escaping)', () => {
+  it('Python-escapes triple quotes (single " each, safe in triple-quoted)', () => {
     const result = mgr.interpolate('code = """{CODE}"""', {
       CODE: 'a """ b',
     });
-    expect(result).toBe('code = """a """ b"""');
+    // Each " is escaped to \" - safe in both regular and triple-quoted strings.
+    expect(result).toBe('code = """a \\"\\"\\" b"""');
+  });
+
+  it('escapes single quotes', () => {
+    const result = mgr.interpolate('s = "{S}"', { S: "it's" });
+    expect(result).toBe('s = "it\\\'s"');
+  });
+
+  it('escapes newlines so source stays single-line per template line', () => {
+    const result = mgr.interpolate('s = "{S}"', { S: 'line1\nline2' });
+    expect(result).toBe('s = "line1\\nline2"');
+  });
+
+  it('{KEY:raw} bypasses escaping for code-block embedding', () => {
+    const result = mgr.interpolate('code = {C:raw}', { C: 'print("hi")' });
+    expect(result).toBe('code = print("hi")');
+  });
+
+  it('does not interpret $ in value as a regex backref', () => {
+    const result = mgr.interpolate('s = "{S}"', { S: '$&' });
+    expect(result).toBe('s = "$&"');
   });
 
   it('interpolates multiple params', () => {
@@ -41,10 +63,12 @@ describe('ScriptManager', () => {
     expect(result).toBe('x and y');
   });
 
-  it('cache hit - second load returns same content', () => {
+  it('two reads of the same template return identical content', () => {
+    // The cache was removed in 0.6.1; loadTemplate now reads from disk every
+    // call. This test asserts content stability, not reference equality.
     const first = mgr.loadTemplate('check_status');
     const second = mgr.loadTemplate('check_status');
-    expect(first).toBe(second); // Same reference from cache
+    expect(first).toEqual(second);
   });
 
   it('combineScripts concatenates with double newlines', () => {
@@ -52,15 +76,14 @@ describe('ScriptManager', () => {
     expect(result).toBe('script1\n\nscript2\n\nscript3');
   });
 
-  it('prepareScript loads and interpolates', () => {
-    // create_project has {PROJECT_FILE_PATH} and {TEMPLATE_PROJECT_PATH} placeholders
+  it('prepareScript loads and interpolates with Python escape', () => {
     const result = mgr.prepareScript('create_project', {
       PROJECT_FILE_PATH: 'C:\\Projects\\test.project',
       TEMPLATE_PROJECT_PATH: 'C:\\Templates\\Standard.project',
     });
-    // Values should appear as-is (no escaping) since templates use r"..." raw strings
-    expect(result).toContain('C:\\Projects\\test.project');
-    expect(result).toContain('C:\\Templates\\Standard.project');
+    // Backslashes are escaped for embedding in regular Python string literals.
+    expect(result).toContain('C:\\\\Projects\\\\test.project');
+    expect(result).toContain('C:\\\\Templates\\\\Standard.project');
   });
 
   it('prepareScriptWithHelpers prepends helpers', () => {
@@ -78,9 +101,10 @@ describe('ScriptManager', () => {
   });
 
   it('Windows path with spaces passes through correctly', () => {
-    const result = mgr.interpolate('path = r"{PATH}"', {
+    const result = mgr.interpolate('path = "{PATH}"', {
       PATH: 'C:\\Program Files\\CODESYS',
     });
-    expect(result).toBe('path = r"C:\\Program Files\\CODESYS"');
+    // Backslashes escaped, spaces unchanged.
+    expect(result).toBe('path = "C:\\\\Program Files\\\\CODESYS"');
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "codesys-mcp-persistent",
-  "version": "0.4.0",
+  "version": "0.6.2",
   "description": "MCP server for CODESYS with persistent UI instance and file-based IPC",
   "main": "dist/server.js",
   "bin": {
@@ -12,7 +12,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').cpSync('src/scripts','dist/scripts',{recursive:true})\"",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc && node -e \"require('fs').cpSync('src/scripts','dist/scripts',{recursive:true})\"",
     "test": "vitest --run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

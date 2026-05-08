@@ -1,7 +1,7 @@
 import sys, scriptengine as script_engine, os, shutil, time, traceback
 # Placeholders
-TEMPLATE_PROJECT_PATH = r'{TEMPLATE_PROJECT_PATH}' # Path to Standard.project
-PROJECT_FILE_PATH = r'{PROJECT_FILE_PATH}'    # Path for the new project (Target Path)
+TEMPLATE_PROJECT_PATH = "{TEMPLATE_PROJECT_PATH}" # Path to Standard.project
+PROJECT_FILE_PATH = "{PROJECT_FILE_PATH}"    # Path for the new project (Target Path)
 try:
     print("DEBUG: Python script create_project (copy from template):")
     print("DEBUG:   Template Source = %s" % TEMPLATE_PROJECT_PATH)

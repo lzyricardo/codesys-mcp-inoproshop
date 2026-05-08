@@ -8,36 +8,36 @@ try:
     all_code = []
 
     def collect_code(obj, path_prefix):
-        """Recursively collect code from all objects that have textual content."""
+        # Recursively collect code from all objects that have textual content.
         obj_name = getattr(obj, 'get_name', lambda: '?')()
         current_path = "%s/%s" % (path_prefix, obj_name) if path_prefix else obj_name
 
         entry = None
 
         # Check for textual declaration
-        decl_text = ""
+        decl_text = u""
         if hasattr(obj, 'textual_declaration'):
             try:
                 td = obj.textual_declaration
                 if td and hasattr(td, 'text'):
-                    decl_text = td.text or ""
+                    decl_text = _to_unicode(td.text) if td.text else u""
             except Exception:
                 pass
 
         # Check for textual implementation
-        impl_text = ""
+        impl_text = u""
         if hasattr(obj, 'textual_implementation'):
             try:
                 ti = obj.textual_implementation
                 if ti and hasattr(ti, 'text'):
-                    impl_text = ti.text or ""
+                    impl_text = _to_unicode(ti.text) if ti.text else u""
             except Exception:
                 pass
 
         if decl_text or impl_text:
             entry = {
-                'path': current_path,
-                'type': type(obj).__name__,
+                'path': _to_unicode(current_path),
+                'type': _to_unicode(type(obj).__name__),
             }
             if decl_text:
                 entry['declaration'] = decl_text
@@ -61,10 +61,15 @@ try:
     except Exception as e:
         print("WARN: Error traversing project tree: %s" % e)
 
-    code_json = json.dumps(all_code)
-    print("### ALL_POU_CODE_START ###")
-    print(code_json)
-    print("### ALL_POU_CODE_END ###")
+    code_json = json.dumps(all_code, ensure_ascii=False)
+    if isinstance(code_json, unicode):
+        code_json_bytes = code_json.encode('utf-8')
+    else:
+        code_json_bytes = code_json
+    sys.stdout.write("### ALL_POU_CODE_START ###\n")
+    sys.stdout.write(code_json_bytes)
+    sys.stdout.write("\n### ALL_POU_CODE_END ###\n")
+    sys.stdout.flush()
     print("Total POUs with code: %d" % len(all_code))
     print("SCRIPT_SUCCESS: All POU code retrieved.")
     sys.exit(0)

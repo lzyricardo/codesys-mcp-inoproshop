@@ -29,6 +29,13 @@ export interface LauncherConfig {
   codesysPath: string;
   profileName: string;
   workspaceDir: string;
+  /**
+   * If true, runs `taskkill /F /T /IM CODESYS.exe` before spawning a new
+   * instance. Useful in dev when MCP server restarts leave orphaned CODESYS
+   * processes holding project locks. Off by default — never kill an external
+   * CODESYS instance the user might be using.
+   */
+  killExistingCodesys?: boolean;
 }
 
 /** Runtime status of the CODESYS launcher */

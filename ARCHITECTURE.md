@@ -165,7 +165,7 @@ Original stdout/stderr are saved and restored in a `try/finally` block, guarante
 
 Python scripts are stored as templates in `src/scripts/` with `{PLACEHOLDER}` tokens. The `ScriptManager` handles:
 
-1. **Loading** — reads `.py` files from disk with caching
+1. **Loading** — reads `.py` files from disk on every call (no cache; removed 0.6.1)
 2. **Interpolation** — replaces `{KEY}` with escaped values
 3. **Escaping** — backslashes doubled for Python string embedding (`C:\Users` -> `C:\\Users`)
 4. **Triple-quote escaping** — `"""` in values escaped to `\"\"\"` for Python triple-quoted strings

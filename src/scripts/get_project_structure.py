@@ -46,17 +46,17 @@ def get_object_structure(obj, indent=0, max_depth=10):
     return lines
 
 # --- Main script ---
-PROJECT_FILE_PATH = r"{PROJECT_FILE_PATH}"
+PROJECT_FILE_PATH = "{PROJECT_FILE_PATH}"
+# Resource read - require_project_open ensures we don't silently switch
+# projects when the URI references a non-current project file.
 
 try:
     project_path = PROJECT_FILE_PATH.strip('"\'')
     print("DEBUG: Getting structure for project: '%s'" % project_path)
 
-    # Use the prepended ensure_project_open helper (same as all other scripts)
-    primary_project = ensure_project_open(project_path)
-
-    if primary_project is None:
-        raise ValueError("Failed to open project: %s" % project_path)
+    # Resource read - refuse to silently switch projects. require_project_open
+    # raises if the request can't be served, so we never see None here.
+    primary_project = require_project_open(project_path)
 
     print("DEBUG: Project object type: %s" % type(primary_project).__name__)
 

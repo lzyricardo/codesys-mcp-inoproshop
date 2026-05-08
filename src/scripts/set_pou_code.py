@@ -3,6 +3,8 @@ import sys, scriptengine as script_engine, os, traceback
 POU_FULL_PATH = "{POU_FULL_PATH}" # Expecting format like "Application/MyPOU" or "Folder/SubFolder/MyPOU"
 DECLARATION_CONTENT = """{DECLARATION_CONTENT}"""
 IMPLEMENTATION_CONTENT = """{IMPLEMENTATION_CONTENT}"""
+UPDATE_DECL_FLAG = "{UPDATE_DECL}"  # "1" if caller passed declarationCode, "0" if omitted/empty
+UPDATE_IMPL_FLAG = "{UPDATE_IMPL}"  # "1" if caller passed implementationCode, "0" if omitted/empty
 
 try:
     print("DEBUG: set_pou_code script: POU_FULL_PATH='%s', Project='%s'" % (POU_FULL_PATH, PROJECT_FILE_PATH))
@@ -18,9 +20,7 @@ try:
 
     # --- Set Declaration Part ---
     declaration_updated = False
-    # Check if the content is actually provided (might be None/empty if only impl is set)
-    has_declaration_content = 'DECLARATION_CONTENT' in locals() or 'DECLARATION_CONTENT' in globals()
-    if has_declaration_content and DECLARATION_CONTENT is not None: # Check not None
+    if UPDATE_DECL_FLAG == "1":
         if hasattr(target_object, 'textual_declaration'):
             decl_obj = target_object.textual_declaration
             if decl_obj and hasattr(decl_obj, 'replace'):
@@ -42,8 +42,7 @@ try:
 
     # --- Set Implementation Part ---
     implementation_updated = False
-    has_implementation_content = 'IMPLEMENTATION_CONTENT' in locals() or 'IMPLEMENTATION_CONTENT' in globals()
-    if has_implementation_content and IMPLEMENTATION_CONTENT is not None: # Check not None
+    if UPDATE_IMPL_FLAG == "1":
         if hasattr(target_object, 'textual_implementation'):
             impl_obj = target_object.textual_implementation
             if impl_obj and hasattr(impl_obj, 'replace'):

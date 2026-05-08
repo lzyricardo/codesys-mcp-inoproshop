@@ -1,48 +1,69 @@
 /**
  * Python script template loading and interpolation.
- * Loads .py templates from src/scripts/, caches them, and performs {PARAM} replacement.
+ * Loads .py templates from src/scripts/ and performs {PARAM} replacement.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { ScriptParams } from './types';
 
+/**
+ * Escape a string for safe embedding inside an IronPython 2.7 double-quoted
+ * string literal. Handles backslash, double-quote, single-quote, and the
+ * standard line/whitespace escapes.
+ */
+function pyEscape(s: string): string {
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
 export class ScriptManager {
   private scriptsDir: string;
-  private cache: Map<string, string> = new Map();
 
   constructor(scriptsDir?: string) {
     this.scriptsDir = scriptsDir ?? path.join(__dirname, 'scripts');
   }
 
-  /** Synchronously load a template file and cache it */
+  /** Load a template file from disk. */
   loadTemplate(name: string): string {
     const fileName = name.endsWith('.py') ? name : `${name}.py`;
-    const cached = this.cache.get(fileName);
-    if (cached !== undefined) {
-      return cached;
-    }
-
     const filePath = path.join(this.scriptsDir, fileName);
     if (!fs.existsSync(filePath)) {
       throw new Error(`Script template not found: ${filePath}`);
     }
-
-    const content = fs.readFileSync(filePath, 'utf-8');
-    this.cache.set(fileName, content);
-    return content;
+    return fs.readFileSync(filePath, 'utf-8');
   }
 
   /**
-   * Replace {KEY} placeholders with values.
-   * No automatic escaping — callers are responsible for escaping values
-   * appropriate to their Python context (raw strings, triple-quoted strings, etc.).
+   * Replace {KEY} placeholders with Python-string-escaped values.
+   *
+   * Every value is escaped for safe embedding inside a Python double-quoted
+   * string literal: backslashes, double/single quotes, and newline chars are
+   * escaped. This eliminates injection bugs where a user-controlled identifier
+   * (POU name, variable path, password) could contain a `"` that broke out
+   * of the string literal in the generated IronPython source.
+   *
+   * For values that must be embedded outside a string (raw code blocks like
+   * `set_pou_code` declaration/implementation), use `{KEY:raw}` in the template
+   * - those placeholders skip escaping. set_pou_code.py applies its own
+   * targeted escape for its triple-quoted blocks.
+   *
+   * The replace callback form is used so a `$` in the value isn't interpreted
+   * as a regex backreference token.
    */
   interpolate(template: string, params: ScriptParams): string {
     let result = template;
     for (const [key, value] of Object.entries(params)) {
-      const pattern = new RegExp(`\\{${key}\\}`, 'g');
-      result = result.replace(pattern, String(value));
+      const escaped = pyEscape(String(value));
+      const escapedPattern = new RegExp(`\\{${key}\\}`, 'g');
+      const rawPattern = new RegExp(`\\{${key}:raw\\}`, 'g');
+      result = result.replace(rawPattern, () => String(value));
+      result = result.replace(escapedPattern, () => escaped);
     }
     return result;
   }

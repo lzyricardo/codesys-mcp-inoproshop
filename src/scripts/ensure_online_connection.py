@@ -1,79 +1,57 @@
 import traceback
 
-# --- Function to ensure an online connection to the active application ---
+
 def ensure_online_connection(primary_project):
-    """Get or create an online application connection for the active application."""
-    print("DEBUG: Ensuring online connection...")
+    """Returns (online_application, target_app). Raises with an actionable
+    message if create_online_application fails.
 
-    target_app = None
-    app_name = "N/A"
+    Pre-conditions handled by the caller, NOT by this helper:
+      * For a real PLC, the device must have a gateway/address configured
+        (or the caller must pass ipAddress/gatewayName to connect_to_device,
+        which sets it before this helper runs).
+      * For simulator mode, the caller must invoke set_simulation_mode
+        (enable=True) on the project first.
 
-    # Try getting active application
-    try:
-        target_app = primary_project.active_application
-        if target_app:
-            app_name = getattr(target_app, 'get_name', lambda: "Unnamed App")()
-    except Exception as e:
-        print("WARN: Could not get active application: %s" % e)
+    Known limitation: the CODESYS scripting API can raise "Stack empty" from
+    create_online_application even with simulation engaged, because the
+    internal context stack is populated by IDE selection. If this happens,
+    the user must click Online -> Login once in the IDE for the session
+    (the project-level simulation state then sticks).
+    """
+    print("DEBUG: ensure_online_connection")
 
-    # Search for first application if no active
+    target_app = primary_project.active_application
     if not target_app:
-        try:
-            all_children = primary_project.get_children(True)
-            for child in all_children:
-                if hasattr(child, 'is_application') and child.is_application:
-                    target_app = child
-                    app_name = getattr(child, 'get_name', lambda: "Unnamed App")()
-                    break
-        except Exception as e:
-            print("WARN: Error finding application: %s" % e)
-
+        for child in primary_project.get_children(True):
+            if hasattr(child, 'is_application') and child.is_application:
+                target_app = child
+                break
     if not target_app:
-        raise RuntimeError("No application found in project.")
+        raise RuntimeError(
+            "No active application found. Open the project in the IDE and "
+            "right-click the Application node -> Set Active Application."
+        )
 
-    print("DEBUG: Using application: %s" % app_name)
+    app_name = getattr(target_app, 'get_name', lambda: '?')()
+    print("DEBUG: target_app: '%s'" % app_name)
 
-    # Try to get or create online application
-    online_app = None
-
-    # Pattern 1: app.create_online_application()
-    if hasattr(target_app, 'create_online_application'):
-        try:
-            online_app = target_app.create_online_application()
-            if online_app:
-                print("DEBUG: Created online application via app.create_online_application()")
-                return online_app, target_app
-        except Exception as e:
-            print("DEBUG: app.create_online_application() failed: %s" % e)
-
-    # Pattern 2: scriptengine online module
+    import scriptengine as se
     try:
-        import scriptengine as se
-        if hasattr(se, 'online'):
-            online_module = se.online
-            if hasattr(online_module, 'create_online_application'):
-                try:
-                    online_app = online_module.create_online_application(target_app)
-                    if online_app:
-                        print("DEBUG: Created online application via scriptengine.online.create_online_application()")
-                        return online_app, target_app
-                except Exception as e:
-                    print("DEBUG: scriptengine.online.create_online_application() failed: %s" % e)
+        oa = se.online.create_online_application(target_app)
+        if oa is not None:
+            print("DEBUG: create_online_application OK")
+            return oa, target_app
     except Exception as e:
-        print("DEBUG: scriptengine online module access failed: %s" % e)
+        msg = (
+            "create_online_application failed for '%s': %s. "
+            "For simulation, call set_simulation_mode(enable=True) first; "
+            "for a real PLC, ensure the gateway/address is set on the "
+            "device (or pass ipAddress/gatewayName to connect_to_device). "
+            "If simulation is engaged but this still raises 'Stack empty', "
+            "click Online -> Login once in the IDE for this session."
+        ) % (app_name, e)
+        raise RuntimeError(msg)
 
-    # Pattern 3: Check if there's already an online_application property
-    if hasattr(target_app, 'online_application'):
-        try:
-            online_app = target_app.online_application
-            if online_app:
-                print("DEBUG: Found existing online application via app.online_application")
-                return online_app, target_app
-        except Exception as e:
-            print("DEBUG: app.online_application failed: %s" % e)
-
-    if not online_app:
-        raise RuntimeError("Could not create online application connection. Ensure a device/gateway is configured in the project.")
-
-    return online_app, target_app
-# --- End of ensure_online_connection function ---
+    raise RuntimeError(
+        "create_online_application returned None for '%s'." % app_name
+    )

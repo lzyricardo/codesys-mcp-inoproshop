@@ -36,38 +36,43 @@ try:
 
     print("DEBUG: Library Manager found: %s" % getattr(lib_manager, 'get_name', lambda: '?')())
 
-    # Try to add the library using various API patterns
+    # Try to add the library using known API patterns. If a method exists
+    # but raises (e.g. "placeholder library X could not be resolved"), capture
+    # the first such error and surface it as the failure reason - that's far
+    # more actionable than the generic "no add method found" message.
     added = False
+    last_real_error = None  # exception text from a method that DOES exist
+    candidate_methods = ('add_library', 'insert_library', 'add_reference')
 
-    # Pattern 1: lib_manager.add_library(name)
-    if hasattr(lib_manager, 'add_library'):
+    for method_name in candidate_methods:
+        if not hasattr(lib_manager, method_name):
+            continue
+        method = getattr(lib_manager, method_name)
         try:
-            result = lib_manager.add_library(LIBRARY_NAME)
+            result = method(LIBRARY_NAME)
             added = True
-            print("DEBUG: add_library succeeded: %s" % result)
+            print("DEBUG: %s succeeded: %s" % (method_name, result))
+            break
         except Exception as e:
-            print("DEBUG: add_library failed: %s" % e)
-
-    # Pattern 2: lib_manager.insert_library(name)
-    if not added and hasattr(lib_manager, 'insert_library'):
-        try:
-            result = lib_manager.insert_library(LIBRARY_NAME)
-            added = True
-            print("DEBUG: insert_library succeeded: %s" % result)
-        except Exception as e:
-            print("DEBUG: insert_library failed: %s" % e)
-
-    # Pattern 3: lib_manager.add_reference(name)
-    if not added and hasattr(lib_manager, 'add_reference'):
-        try:
-            result = lib_manager.add_reference(LIBRARY_NAME)
-            added = True
-            print("DEBUG: add_reference succeeded: %s" % result)
-        except Exception as e:
-            print("DEBUG: add_reference failed: %s" % e)
+            err_text = "%s: %s" % (type(e).__name__, e)
+            print("DEBUG: %s raised: %s" % (method_name, err_text))
+            if last_real_error is None:
+                last_real_error = (method_name, err_text)
 
     if not added:
-        raise RuntimeError("Could not add library '%s'. Library Manager does not support known add methods (add_library, insert_library, add_reference)." % LIBRARY_NAME)
+        if last_real_error is not None:
+            raise RuntimeError(
+                "Library Manager.%s('%s') failed: %s. The library is likely "
+                "not installed in the CODESYS library repository, or the name "
+                "needs a fully-qualified placeholder (e.g. "
+                "'Standard, * (System)' or 'Util, 3.5.16.0 (3S - Smart Software Solutions GmbH)')." % (
+                    last_real_error[0], LIBRARY_NAME, last_real_error[1])
+            )
+        raise RuntimeError(
+            "Could not add library '%s'. Library Manager does not expose "
+            "any known add method (tried add_library, insert_library, "
+            "add_reference)." % LIBRARY_NAME
+        )
 
     try:
         print("DEBUG: Saving Project...")

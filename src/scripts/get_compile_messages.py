@@ -140,10 +140,24 @@ try:
             except Exception as e:
                 print("DEBUG: system.get_messages() failed: %s" % e)
 
-    messages_json = json.dumps(messages)
-    print("### COMPILE_MESSAGES_START ###")
-    print(messages_json)
-    print("### COMPILE_MESSAGES_END ###")
+    for entry in messages:
+        if 'text' in entry:
+            entry['text'] = _to_unicode(entry['text'])
+        if 'object' in entry:
+            entry['object'] = _to_unicode(entry['object'])
+        if 'severity' in entry:
+            entry['severity'] = _to_unicode(entry['severity'])
+
+    # _json_default is provided by the prepended _text_utils helper.
+    messages_json = json.dumps(messages, ensure_ascii=False, default=_json_default)
+    if isinstance(messages_json, unicode):
+        messages_json_bytes = messages_json.encode('utf-8')
+    else:
+        messages_json_bytes = messages_json
+    sys.stdout.write("### COMPILE_MESSAGES_START ###\n")
+    sys.stdout.write(messages_json_bytes)
+    sys.stdout.write("\n### COMPILE_MESSAGES_END ###\n")
+    sys.stdout.flush()
     print("Messages Found: %s" % messages_found)
     print("Message Count: %d" % len(messages))
     print("SCRIPT_SUCCESS: Compile messages retrieved.")
