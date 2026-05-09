@@ -22,4 +22,3 @@ __pycache__/
 # Local config
 .mcp.json
 .claude/
-CLAUDE.md
