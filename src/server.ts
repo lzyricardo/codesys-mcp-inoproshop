@@ -963,7 +963,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'get_application_state',
-    'Gets the current state of the PLC application (running, stopped, exception, etc.).',
+    'Report the running PLC application state (run / stop / exception) plus login status. Connect first.',
     {
       projectFilePath: z.string().describe("Path to the project file."),
     },
@@ -1000,10 +1000,10 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'read_variable',
-    'Reads the current value of a variable from the running PLC application. Must be connected first.',
+    "Read a live variable from the running PLC. Path format: 'GVL_Name.varname' or 'PRG_Name.varname' (no 'Application.' prefix). Struct members: 'GVL.stFrame.aRoi[0].iValueMm'. Connect first.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
-      variablePath: z.string().describe("Variable path (e.g., 'PLC_PRG.bMotorRunning', 'GVL.nCounter')."),
+      variablePath: z.string().describe("Variable path. Examples: 'GVL_TestControl.iScenario', 'PLC_PRG.bMotor', 'GVL_Cameras.stCam.aRoi[3].iValueMm'. No 'Application.' prefix."),
     },
     async (args: { projectFilePath: string; variablePath: string }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
@@ -1039,11 +1039,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'write_variable',
-    'Writes a value to a variable in the running PLC application. Must be connected first.',
+    "Write a value to a PLC variable via V3's set_prepared_value + force_prepared_values. The variable is FORCED at the new value until unforced (or runtime restart). Use for control flags and test injection, not program outputs. Connect first.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
-      variablePath: z.string().describe("Variable path (e.g., 'PLC_PRG.bMotorRunning')."),
-      value: z.string().describe("Value to write (e.g., 'TRUE', '42', '3.14')."),
+      variablePath: z.string().describe("Variable path (e.g., 'GVL_TestControl.xEnable', 'PLC_PRG.iScenario'). No 'Application.' prefix."),
+      value: z.string().describe("Value to write as IEC literal (e.g., 'TRUE', '42', 'INT#-3', '3.14')."),
     },
     async (args: { projectFilePath: string; variablePath: string; value: string }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);

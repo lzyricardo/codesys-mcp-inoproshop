@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.3 — 2026-05-20
+
+Bug-fix release. Unblocks every online tool against a real PLC. Three independent bugs in the V3-scripting-driven online path were combining to make `connect_to_device`, `download_to_device`, `start_stop_application`, `get_application_state`, `read_variable`, `write_variable`, and `monitor_variables` fail when invoked through MCP (IPC-driven scripting) against actual hardware. Verified end-to-end on V3 SP16 P5 against an ifm AE3100 IIoT Controller.
+
+### Fixed
+
+- **`scriptengine.online.create_online_application` raised `Stack empty` from IPC scripts.** The CODESYS scripting wrapper maintains a private `_executionStack` populated by the script executor's `Executing` event. The IDE menu fires that event when the user clicks Login; IPC-driven scripts (i.e. every MCP tool call) bypass it, so the stack stays empty and `create_online_application` raises `InvalidOperationException: Stack empty.` Fix: `ensure_online_connection.py` now reflects into the private `_executor: IScriptExecutor` field on `scriptengine.online` and calls its public `ExecuteSource(source)` method. ExecuteSource fires `Executing` / `Executed` properly, so the inner source sees a populated stack and `create_online_application` succeeds. Wrapper exposed as `with_executor(fn, *args)` for every online tool to wrap each `scriptengine.online` / `OnlineApplication` call. Degrades to a direct call (with an actionable error pointing at the manual `Online → Login` workaround) on SPs where the private `_executor` field is renamed.
+
+- **`oa.login` was being called with a non-existent enum value and the wrong arity.** `script_engine.OnlineChangeOption.TryOnlineChange` does not exist on V3 SP14+ — the actual enum values are `Force`, `Keep`, `Never`, `Try`. The legacy code's `AttributeError` then fell through to a no-arg `online_app.login()`, which raises `login() takes exactly 2 arguments (0 given)` because the V3 signature is `login(OnlineChangeOption, bDeleteForeignApps)`. Both fixed across `connect_to_device.py` and `download_to_device.py`: `online_app.login(scriptengine.OnlineChangeOption.Try, False)` for the default online-change path, `.Force` for explicit full downloads, `.Never` when `mode='online_change'`.
+
+- **`set_gateway_and_address(gw, ip)` with a raw IP stores the IP-encoded form but V3 login routes by node form.** The IP `'192.168.83.247'` is stored as `'0192.0168.0083.0247'` (block-driver encoded decimal). V3 login then raises `Network error: No route to host` because the Network/Block-Driver layer routes by the node address assigned by the gateway scan (e.g. `'0301.B0F7'`) — not by the IP-encoded form. Fix: new `resolve_device_address` helper in `ensure_online_connection.py`. `connect_to_device.py` calls it immediately after `set_gateway_and_address(gw, IP)` — it runs `gateway.perform_network_scan()`, finds the device (matches by `device_name` against the project device's identification when there's more than one scan result), and re-sets the device address to `node.address`. Generic V3 logic, not vendor-specific.
+
+- **`write_variable` was calling `online_app.write_value(path, value)`, which doesn't exist on V3 SP14+ `IScriptOnlineApplication`.** The actual V3 write API is two-step: `set_prepared_value(path, value_str)` stages a value and `force_prepared_values()` commits it. Rewritten to use the staged + force pattern. The variable is FORCED at the new value until explicitly unforced (call from `eval_python` or restart the runtime) — documented in the tool description so callers know what to expect. A `write_value` / `write` fallback path is preserved for theoretical older SPs that expose the direct API.
+
+### Internal
+
+- `ensure_online_connection.py` rewritten as a three-function shared helper (`ensure_online_connection`, `with_executor`, `resolve_device_address`). Every online tool registered with `['ensure_project_open', 'ensure_online_connection']` helpers now picks up all three workarounds via the existing concat-helpers mechanism — no `server.ts` registration change required.
+- `download_to_device.py` rewritten. The previous code called `online_app.download()`, which doesn't exist on V3 SP14+ — download happens inline with login under the `OnlineChangeOption` argument. The script now performs `login(.Force, False)` for full / `login(.Try, False)` for auto / `login(.Never, False)` for online-change-only, and optionally invokes `create_boot_application` afterwards so the change survives power-cycle.
+- `start_stop_application.py`, `read_variable.py`, `write_variable.py`, `get_application_state.py`, `monitor_variables.py` all updated to route their `OnlineApplication` method calls through `with_executor`.
+- `monitor_variables` now pays a small per-sample `ExecuteSource` overhead. At the 10ms-floor sample interval the wall-clock cadence may slip a few ms; for typical >100ms intervals it's invisible.
+
+### Known not-fixed in this release
+
+- **Simulation-mode `Stack empty` is hit-or-miss.** The `ExecuteSource` workaround is verified to fix real-PLC login. Simulation mode engaged via `system.commands.Item('Simulation').execute('true')` can still leave the project in a state where `create_online_application` fails even inside the ExecuteSource frame — the simulator path appears to have a second, similar dependency. Workaround unchanged: click `Online → Login` once in the IDE per session, or test against a real PLC / CODESYS Control Win softPLC.
+- The reflection target (`scriptengine.online._executor`) is a private field; verified working on SP16 P5. Future SPs may rename or restructure it; `with_executor` is designed to degrade gracefully (falls back to direct call with an actionable error), but the substrate is V3-fragile by design.
+
 ## 0.6.2 — 2026-05-09
 
 Bug-fix release after a multi-agent + live-test deep audit of v0.6.1.

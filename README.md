@@ -127,16 +127,16 @@ Environment variables:
 
 | Tool | Description |
 |------|-------------|
-| `connect_to_device` | Login to the PLC runtime. Optionally pass `ipAddress` (and `gatewayName`, default `Gateway-1`) to set the device address before login |
+| `connect_to_device` | Login to the PLC runtime. Optionally pass `ipAddress` (and `gatewayName`, default `Gateway-1`); the device address is set then auto-resolved from IP-encoded form to the gateway-scan node form (V3 login routes by node, not IP) before login. Works against real PLCs from a pure IPC-driven script via the `with_executor` / `ExecuteSource` frame in `ensure_online_connection` |
 | `disconnect_from_device` | Logout from the PLC runtime. No-op (returns success) if not connected |
 | `set_credentials` | Set default `username`/`password` for subsequent logins. Username must be non-empty. For no-auth runtimes simply do not call this tool |
 | `set_simulation_mode` | Toggle device-level simulation mode on/off. Run before `connect_to_device` when no physical PLC is available |
-| `get_application_state` | Check if the PLC application is running, stopped, or in exception |
-| `read_variable` | Read a live variable value from the running PLC (e.g., `PLC_PRG.bMotorRunning`) |
-| `write_variable` | Write/force a variable value on the running PLC |
-| `download_to_device` | Download compiled application to PLC. `mode`: `auto` (default - try online change, fall back to full), `online_change` (fail if rejected), or `full`. 120s timeout |
+| `get_application_state` | Report the running PLC application state (run / stop / exception) plus login status |
+| `read_variable` | Read a live variable. Path format: `GVL_Name.varname` or `PRG_Name.varname` (no `Application.` prefix). Struct members: `GVL.stFrame.aRoi[0].iValueMm` |
+| `write_variable` | Write a variable via V3's `set_prepared_value` + `force_prepared_values`. The variable is FORCED at the new value until unforced (or runtime restart). Use for control flags / test injection, not program-output variables |
+| `download_to_device` | Download compiled application to PLC. `mode`: `auto` (default - try online change, fall back to full), `online_change` (fail if rejected), or `full`. After login the boot application is built so the change survives power-cycle. 120s timeout |
 | `start_stop_application` | Start or stop the PLC application |
-| `monitor_variables` | Sample one or more PLC variables at a fixed interval over a bounded duration. Return timeseries (capped at 60s. intervalMs floor 10ms) |
+| `monitor_variables` | Sample one or more PLC variables at a fixed interval over a bounded duration. Each sample goes through the `with_executor` frame (adds a few ms per read), so very short intervals see real-vs-requested cadence drift. Return timeseries (capped at 60s. intervalMs floor 10ms) |
 
 ### Library Management Tools
 
@@ -227,7 +227,7 @@ These are CODESYS scripting API or platform constraints, not bugs in this server
 - **`add_library` requires a fully-qualified placeholder** matching the Library Manager UI display string (e.g. `Standard, * (System)`). Bare names like `Util` fail with `placeholder library X could not be resolved`.
 - **`set_default_credentials` rejects empty usernames** with `ValueError`. The `set_credentials` tool Zod-validates `username.min(1)`.
 - **`is_simulation_mode` getter returns `None`** on the ifm AE3100 device descriptor (and probably others). The setter works. Verification has to come from compile + Online → Login working.
-- **`online.create_online_application` raises `Stack empty`** even when simulation is engaged via `system.commands.Item('Simulation').execute('true')`. The IDE's Login command populates an internal context stack the scripting API can't reach. Workaround: click `Online → Login` once in the IDE per session, or run against a real PLC.
+- **`online.create_online_application` historically raised `Stack empty`** from a pure IPC-driven script — the IDE-internal `_executionStack` is only populated by the script executor's `Executing` event, which the IPC bridge bypassed. **Fixed in 0.6.3** for real PLCs: `ensure_online_connection.py` now reflects into `scriptengine.online._executor` and runs every online call inside an `ExecuteSource(source)` frame (via the `with_executor` helper). Real-PLC programmatic login + start/stop/read/write/download now work without a manual `Online → Login` click. If you run on a CODESYS SP where the private `_executor` field is renamed, `with_executor` degrades to a direct call and the helper surfaces an actionable error pointing at the manual workaround. Simulation mode (`set_simulation_mode(enable=true)`) is still hit-or-miss on this front — engaged simulation can leave the project in a state that resists `create_online_application` even with the workaround; if so, click `Online → Login` once in the IDE.
 - **`set_pou_code` auto-saves** - every successful call writes to disk. UI Ctrl+Z does not recover prior content.
 - **Persistent mode is broken on CODESYS V3.5 SP21+.** The watcher's UI-thread marshalling call (`se.system.execute_on_primary_thread()`) was removed from the scripting API; the SP21 P5 stub `ScriptLib/Stubs/scriptengine/ScriptSystem.pyi` has zero matches for `primary_thread|invoke|marshal|dispatch|defer|async`. CODESYS doesn't announce the removal in the SP21 release notes (the closest signal is SP21 P3's one-liner `CDS-94322 "Scripting: Context object for Python calls needed"`, which may or may not be the breakpoint). Symptom: persistent mode boots cleanly, then every tool call returns `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported`. **The `--fallback-headless` flag is launch-time only** — it does not catch this and auto-swap mid-session. Workarounds: (a) run with `--mode headless` until the watcher rewrite ships, or (b) use the forward-port at [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) which implements the single-thread + `system.delay()` rewrite. SP19 / SP20 are unaffected.
 
@@ -268,10 +268,13 @@ The online tools (`connect_to_device`, `read_variable`, etc.) require:
 
 `disconnect_from_device` is safe to call when not connected - it returns `Already disconnected.` rather than failing.
 
-**`Stack empty` from `connect_to_device` after enabling simulation**
-A known limitation in the CODESYS scripting API: `online.create_online_application` can raise `Stack empty` even when simulation is engaged, because the internal context stack is populated by IDE selection (clicking Device or Application in the navigator). Workarounds:
-- Click `Online -> Login` once in the CODESYS IDE for the session, then retry. The project-level simulation flag persists.
-- Or run against a real PLC / CODESYS Control Win softPLC instead of IDE simulation.
+**`Stack empty` from `connect_to_device`**
+Fixed in 0.6.3 for real PLCs. `ensure_online_connection.py` now reflects into `scriptengine.online._executor` and runs every online call inside an `ExecuteSource(source)` frame, so the IDE-internal `_executionStack` the scripting API depends on is properly populated. Standard `connect_to_device`, `start_stop_application`, `read_variable`, `write_variable`, `download_to_device`, `get_application_state`, and `monitor_variables` all work programmatically against real hardware without a manual IDE login. If you still see `Stack empty` after upgrading:
+- Confirm the SP exposes `scriptengine.online._executor` (CODESYS V3 SP14+; verified on SP16 P5). The helper raises a clear error if the private field has been renamed in a future SP.
+- For simulation mode (`set_simulation_mode(enable=true)`): the workaround is hit-or-miss against the simulator; click `Online → Login` once in the IDE if needed, or test against a real PLC / CODESYS Control Win softPLC.
+
+**`Network error: No route to host` from `connect_to_device`** even though `ping`/TCP works
+CODESYS V3 login routes by the Network/Block-Driver node address (e.g. `0301.B0F7`) assigned by the gateway during a scan — not by the IP-encoded form (`0192.0168.0083.0247`) that `set_gateway_and_address` stores from a raw IP string. **Fixed in 0.6.3:** `connect_to_device` now scans the gateway after setting the IP and re-sets the device to the scan node form before login. If you still hit this, run `gw.perform_network_scan()` manually via `eval_python` to see what the gateway can reach — empty results usually mean a firewall blocking the gateway-to-runtime port (TCP 11740 by default) rather than the IP path.
 
 **Project file locked after MCP server restart**
 The launcher now scans for a live session from the prior MCP server and adopts it on startup, so this should rarely surface. If it still does (mismatched profile, malformed `ready.signal`, or you ran a non-persistent transient earlier), either close the orphan `CODESYS.exe` via Task Manager, or pass `--kill-existing-codesys` to the next launch (off by default so we never kill an external IDE session you might have open).
