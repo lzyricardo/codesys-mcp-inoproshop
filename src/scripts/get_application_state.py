@@ -7,21 +7,23 @@ try:
     online_app, target_app = ensure_online_connection(primary_project)
     app_name = getattr(target_app, 'get_name', lambda: "Unknown")()
 
-    # Get application state
+    # Both `application_state` and `is_logged_in` are properties on
+    # the OnlineApplication. Reading them touches CODESYS internal
+    # state and can hit "Stack empty" on a real PLC from an IPC
+    # script, so route the reads through with_executor.
     state = "unknown"
     if hasattr(online_app, 'application_state'):
         try:
-            state = str(online_app.application_state)
+            state = str(with_executor(lambda: online_app.application_state))
         except Exception as e:
             print("WARN: Could not read application_state: %s" % e)
     else:
         print("WARN: online application does not have application_state property.")
 
-    # Try to get additional info
     is_logged_in = "unknown"
     if hasattr(online_app, 'is_logged_in'):
         try:
-            is_logged_in = str(online_app.is_logged_in)
+            is_logged_in = str(with_executor(lambda: online_app.is_logged_in))
         except Exception:
             pass
 

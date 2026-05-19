@@ -31,8 +31,12 @@ try:
     online_app, target_app = ensure_online_connection(primary_project)
     app_name = getattr(target_app, 'get_name', lambda: "Unknown")()
 
-    # Snapshot the read function once - hasattr probing on every iteration
-    # adds latency that shows up at high sample rates.
+    # Snapshot the read function once. Each iteration goes through
+    # with_executor so the CODESYS scripting executor fires its
+    # Executing event and the internal _executionStack is populated.
+    # This is the same Stack-empty workaround that
+    # ensure_online_connection uses for create_online_application — it
+    # applies to every online op when driven from a pure IPC script.
     if hasattr(online_app, 'read_value'):
         read_fn = online_app.read_value
         is_value_object = True
@@ -56,7 +60,7 @@ try:
         values = {}
         for var_path in variable_paths:
             try:
-                result = read_fn(var_path)
+                result = with_executor(read_fn, var_path)
                 if result is None:
                     values[_to_unicode(var_path)] = None
                 elif is_value_object and hasattr(result, 'value'):
