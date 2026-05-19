@@ -8,10 +8,11 @@ Unlike headless-only approaches that spawn a new CODESYS process per command, th
 
 - **Persistent mode** - CODESYS UI stays open. Commands execute in the running instance
 - **Headless fallback** - automatic fallback to `--noUI` spawn-per-command if persistent mode fails
-- **File-based IPC** - proven approach using atomic file writes and a Python watcher script
+- **File-based IPC** - atomic file writes (`.NET System.IO.File.Replace` on NTFS) + a watcher running inside CODESYS via `--runscript`
 - **Command serialization** - async mutex ensures one command at a time
+- **Session adoption** - on launch, scans for and re-attaches to a live CODESYS+watcher left by a previous MCP server (no duplicate spawn, no project-lock contention on `/mcp` reconnect)
 - **Health monitoring** - detects CODESYS crashes and reports state
-- **40 MCP tools** - project management, POU authoring, structured compiler diagnostics, runtime monitoring, simulation, library management, code search, refactor, device tree, fieldbus I/O mapping, archiving
+- **41 MCP tools** - project management + templates, POU authoring, structured compiler diagnostics, runtime monitoring, simulation, library management, code search, refactor, device tree, fieldbus I/O mapping, archiving, plus a `[DEV]` raw-ScriptEngine evaluator
 - **Drop-in replacement** - same MCP tool names and parameters as `@codesys/mcp-toolkit` (the original toolkit's surface is a strict subset)
 
 ## Installation
@@ -30,7 +31,7 @@ npm run build
 npm link
 ```
 
-**Requirements:** Node.js 18+, Windows, CODESYS 3.5 SP19 or SP21 installed.
+**Requirements:** Node.js 18+, Windows, CODESYS 3.5 SP19 or SP20 installed for full persistent-mode support. **SP21+ note:** CODESYS removed the scripting API the persistent watcher uses to marshal work onto the UI thread (`system.execute_on_primary_thread`), so on SP21 Patch 5 and SP22 Patch 1 (and possibly earlier SP21 patches) persistent mode fails with "Marshal error: ... no longer supported" on every tool call. Until the watcher rewrite ships, run SP21+ with `--mode headless` (works identically to the upstream `@codesys/mcp-toolkit`, just slower). See [Known limitations](#known-limitations) for details.
 
 ## Quick Start
 
@@ -78,7 +79,9 @@ codesys-mcp-persistent \
 | `-V, --version` | Show version number | - |
 | `-h, --help` | Show help | - |
 
-Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults when the corresponding flags are not provided.
+Environment variables:
+- `CODESYS_PATH`, `CODESYS_PROFILE` - defaults for the corresponding flags
+- `CODESYS_MCP_READY_TIMEOUT_MS` - override the watcher-ready timeout (default `180000`). Cold first launches of older SPs (SP16 P5 observed at ~120s) routinely exceed the 60s used in earlier versions, so the default is now 3 minutes. Bump it further on slow hardware
 
 ## MCP Tools
 
@@ -86,16 +89,18 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 
 | Tool | Description |
 |------|-------------|
-| `launch_codesys` | Manually launch CODESYS (use with `--no-auto-launch`) |
+| `launch_codesys` | Manually launch CODESYS (use with `--no-auto-launch`). Will adopt a live session if one already exists |
 | `shutdown_codesys` | Shut down the persistent CODESYS instance |
 | `get_codesys_status` | Get current state, PID, execution mode |
+| `eval_python` | **[DEV]** Execute arbitrary IronPython 2.7 against the live `scriptengine`. Code must print `SCRIPT_SUCCESS` before `sys.exit(0)`. Intended for ScriptEngine API audits, not routine use. Never invoke the IDE's `Login` command from here - it hangs the primary thread |
 
 ### Project Tools
 
 | Tool | Description |
 |------|-------------|
 | `open_project` | Open an existing CODESYS project file |
-| `create_project` | Create a new project from the standard template |
+| `create_project` | Create a new project. Defaults to the bundled `Standard.project`; pass `templatePath` to copy a specific `.project` file, or `templateName` to instantiate a template registered with CODESYS's Template Manager (e.g. an installed ifm AE3100 template). Use `list_project_templates` to discover valid values |
+| `list_project_templates` | Enumerate available project templates. Combines (1) templates registered via CODESYS's Template Manager (what `File > New Project > Standard Project from Template` shows) and (2) a filesystem scan of well-known `%ProgramData%/CODESYS` locations. Returns `{name, path, source}` per template |
 | `save_project` | Save the currently open project |
 | `compile_project` | Build the primary application with structured error output (120s timeout) |
 | `get_compile_messages` | Retrieve last compiler messages without triggering a new build |
@@ -184,14 +189,15 @@ The `pou-code` resource also reads Method and Property bodies (despite its name)
 
 ### Persistent Mode (default)
 
-1. Server launches `CODESYS.exe` with `--runscript=watcher.py` (no `--noUI`)
-2. CODESYS UI opens - user can see and interact with the IDE
-3. The watcher script starts a .NET background thread that polls a `commands/` directory, then **returns control to CODESYS** so the UI stays fully responsive
-4. When a tool is called, the server writes a `.py` script + `.command.json` to `commands/`
-5. The background thread detects the command and marshals execution onto the CODESYS UI thread via `system.execute_on_primary_thread()`
-6. Results are written atomically to `results/`
-7. Changes made by tools appear in the CODESYS UI in real-time
-8. The UI remains interactive between commands - only briefly paused during synchronous API calls (compile, open)
+1. **Session adoption first.** Server scans `%TEMP%/codesys-mcp-persistent/` for any live session left by a previous MCP server (matching profile, PID still alive, `ready.signal` present). If one is found, the launcher attaches to it instead of spawning a new CODESYS - this closes out the orphan-on-`/mcp`-reconnect problem
+2. Otherwise, server launches `CODESYS.exe` with `--runscript=watcher.py` (no `--noUI`)
+3. CODESYS UI opens - user can see and interact with the IDE
+4. The watcher script writes `ready.signal` (with PID + profile + python version), then starts a .NET background thread that polls a `commands/` directory and **returns control to CODESYS** so the UI stays fully responsive
+5. When a tool is called, the server writes a `.py` script + `.command.json` to `commands/` (atomic via `.NET File.Replace`, with script written + renamed before the trigger)
+6. The background thread detects the command and marshals execution onto the CODESYS UI thread via `system.execute_on_primary_thread()`
+7. Results are written atomically to `results/`; Node polls with exponential backoff (100ms → 1000ms cap)
+8. Changes made by tools appear in the CODESYS UI in real-time
+9. The UI remains interactive between commands - only briefly paused during synchronous API calls (compile, open)
 
 ### Headless Mode
 
@@ -223,7 +229,7 @@ These are CODESYS scripting API or platform constraints, not bugs in this server
 - **`is_simulation_mode` getter returns `None`** on the ifm AE3100 device descriptor (and probably others). The setter works. Verification has to come from compile + Online → Login working.
 - **`online.create_online_application` raises `Stack empty`** even when simulation is engaged via `system.commands.Item('Simulation').execute('true')`. The IDE's Login command populates an internal context stack the scripting API can't reach. Workaround: click `Online → Login` once in the IDE per session, or run against a real PLC.
 - **`set_pou_code` auto-saves** - every successful call writes to disk. UI Ctrl+Z does not recover prior content.
-- **Atomic file writes are not strictly atomic on Windows** - the watcher's `os.remove` + `os.rename` sequence leaves a small window where readers see no file. Tolerated by the IPC retry loop but not ideal. Tracked.
+- **Persistent mode is broken on CODESYS V3.5 SP21+.** The watcher's UI-thread marshalling call (`se.system.execute_on_primary_thread()`) was removed from the scripting API; the SP21 P5 stub `ScriptLib/Stubs/scriptengine/ScriptSystem.pyi` has zero matches for `primary_thread|invoke|marshal|dispatch|defer|async`. CODESYS doesn't announce the removal in the SP21 release notes (the closest signal is SP21 P3's one-liner `CDS-94322 "Scripting: Context object for Python calls needed"`, which may or may not be the breakpoint). Symptom: persistent mode boots cleanly, then every tool call returns `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported`. **The `--fallback-headless` flag is launch-time only** — it does not catch this and auto-swap mid-session. Workarounds: (a) run with `--mode headless` until the watcher rewrite ships, or (b) use the forward-port at [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) which implements the single-thread + `system.delay()` rewrite. SP19 / SP20 are unaffected.
 
 ## Troubleshooting
 
@@ -234,11 +240,19 @@ Verify the path with `--detect`. The executable is typically at:
 **Project file locked**
 Another CODESYS instance may have the project open. Close it first or use persistent mode so there's only one instance.
 
+**Every tool call fails with "Marshal error: ... is no longer supported" (CODESYS V3.5 SP21+)**
+CODESYS removed `se.system.execute_on_primary_thread()` somewhere in the SP21 line. The persistent watcher uses it to dispatch work from its polling thread onto the IDE's UI thread; without it, every tool call returns this error verbatim. The launcher comes up cleanly (`ready.signal` fires before the first marshal), so this doesn't surface until you actually call a tool.
+
+Workaround for now: switch to headless mode — `--mode headless` (or remove the `--mode persistent` arg if you've set it explicitly). Each tool call will spawn a fresh `--noUI` CODESYS process; you lose the live-UI workflow and pay the 10–30s startup-per-command cost but everything else works. Alternatively, use the SP21+ forward-port at [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus). The rewrite is on this repo's roadmap; tracked in `CLAUDE.md` deferred work.
+
 **Watcher timeout (persistent mode)**
-If the watcher doesn't signal ready within 60 seconds, check:
+Default is **180 seconds** - cold first launches of older SPs (SP16 P5 observed at ~120s) routinely exceed the older 60s budget. If the watcher still doesn't signal ready, check:
 - CODESYS path and profile are correct
 - No modal dialogs are blocking CODESYS startup
+- Bump the deadline further on slow hardware: `CODESYS_MCP_READY_TIMEOUT_MS=300000`
 - Try `--verbose` for detailed logging
+
+If a launch timed out but CODESYS is actually still coming up, simply call `launch_codesys` again (or reconnect `/mcp`) - the launcher's recovery path will re-attach to the alive PID and finish polling for `ready.signal` instead of spawning a second instance.
 
 **UI briefly pauses during commands (persistent mode)**
 The watcher uses a background thread that marshals work onto the UI thread, so the UI stays responsive between commands. During synchronous CODESYS API calls (compile, project open), the UI may briefly pause - this is expected and normal. If a command hangs, check the CODESYS messages window for modal dialogs or errors.
@@ -260,7 +274,7 @@ A known limitation in the CODESYS scripting API: `online.create_online_applicati
 - Or run against a real PLC / CODESYS Control Win softPLC instead of IDE simulation.
 
 **Project file locked after MCP server restart**
-If a previous MCP session left an orphan `CODESYS.exe` holding the project file, transient spawns will fail with "selected project currently in use". Either close the orphan via Task Manager, or pass `--kill-existing-codesys` to the next launch (off by default so we never kill an external IDE session you might have open).
+The launcher now scans for a live session from the prior MCP server and adopts it on startup, so this should rarely surface. If it still does (mismatched profile, malformed `ready.signal`, or you ran a non-persistent transient earlier), either close the orphan `CODESYS.exe` via Task Manager, or pass `--kill-existing-codesys` to the next launch (off by default so we never kill an external IDE session you might have open).
 
 **`add_library` reports "placeholder library X could not be resolved"**
 The `add_library` tool calls `Library Manager.add_library(name)`, which only accepts library names that are installed in the CODESYS library repository. Ad-hoc strings like `"Util"` are rejected. Pass a fully-qualified placeholder string the way it appears in the Library Manager UI, e.g.:
@@ -304,7 +318,7 @@ npm run test:watch
 ```
 src/
   bin.ts              CLI entry point
-  server.ts           MCP tool/resource registration (40 tools, 3 resources)
+  server.ts           MCP tool/resource registration (41 tools, 3 resources)
   launcher.ts         CODESYS process management
   ipc.ts              File-based IPC transport
   headless.ts         Headless fallback executor
