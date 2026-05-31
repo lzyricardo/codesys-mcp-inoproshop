@@ -6,9 +6,10 @@ Orientation for a future Claude / agent session working on this repo. Read first
 
 `codesys-mcp-persistent` is an MCP server that wraps the **CODESYS V3.5 IDE scripting API** (IronPython 2.7) as MCP tools. Owned/maintained by Luke Harriman (`luke-harriman` on GitHub). Drop-in superset of `@codesys/mcp-toolkit`.
 
-- **Target runtime:** Windows + CODESYS V3.5 SP19 / SP21 + Node 18+. Not portable.
+- **Target runtime:** Windows + CODESYS V3.5 SP19 / SP20 + Node 18+. Not portable.
+- **SP21+ persistent mode is currently broken.** The watcher's `se.system.execute_on_primary_thread()` call no longer exists in SP21 P5 / SP22 P1 (and possibly earlier patches — SP21 P3 release note `CDS-94322 "Scripting: Context object for Python calls needed"` is the closest paper trail but unconfirmed). Symptom: every persistent-mode tool call returns `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported`. Headless mode (`--noUI` per command) is unaffected. The fix is well-understood (single-thread watcher + `se.system.delay()` between polls — see [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) v0.4.2 for the reference implementation) but not yet adopted here. See known pitfall #12 and the deferred-work entry.
 - **Wire format:** stdio JSON-RPC (MCP) on the outside; file-based IPC on the inside.
-- **Two execution modes:** `persistent` (CODESYS UI stays open, watcher.py running, commands marshalled onto its primary thread) and `headless` (`--noUI` spawn-per-command). Persistent is the point of the project; headless is the bootstrap + fallback.
+- **Two execution modes:** `persistent` (CODESYS UI stays open, watcher.py running, commands marshalled onto its primary thread) and `headless` (`--noUI` spawn-per-command). Persistent is the point of the project; headless is the bootstrap + fallback (and the only SP21+-compatible mode until the watcher rewrite lands).
 
 Read `README.md` for tool surface, `ARCHITECTURE.md` for IPC details, `CHANGELOG.md` for the per-version journey.
 
@@ -16,7 +17,7 @@ Read `README.md` for tool surface, `ARCHITECTURE.md` for IPC details, `CHANGELOG
 
 1. **IronPython 2.7 inside CODESYS.** Scripts run there, not in CPython. No `f""` strings, no `print()` parens, no `nonlocal`, `unicode` is a separate type from `str`, ints can be `long`, `range()` returns a list. The default `json.dumps(..., ensure_ascii=True)` calls a defective decode path that crashes on cp1252 bytes - **always use `ensure_ascii=False` and emit utf-8 via `_text_utils.emit_result()`**.
 2. **ASCII-only Python source** (no `# -*- coding -*-` header in current scripts). Em-dashes, smart quotes, `§` are forbidden in source. The static checker `dev/check-scripts.ps1` enforces this; run it before every commit.
-3. **CODESYS scripting API is single-threaded.** The watcher marshals commands onto the IDE's primary UI thread via `system.execute_on_primary_thread()`. A long-running script (regex DoS, big bulk read) freezes the IDE.
+3. **CODESYS scripting API is single-threaded.** Current watcher marshals from a .NET background thread onto the IDE's primary UI thread via `se.system.execute_on_primary_thread()` (src/scripts/watcher.py:230). A long-running script (regex DoS, big bulk read) freezes the IDE. **This API was removed in SP21+** — see pitfall #12. The forward fix runs the watcher directly on the primary thread and yields via `se.system.delay()` between polls; the IDE stays interactive because `system.delay()` services the message loop. Until that rewrite ships, SP21+ users must run with `--mode headless`.
 4. **`scriptengine.online` ops need an executor frame on real PLCs.** `create_online_application`, `oa.login`, `oa.start`, `oa.read_value`, `oa.set_prepared_value`, etc. raise `InvalidOperationException: Stack empty.` from a pure IPC-driven script — the IDE-internal `_executionStack` is only populated by the script executor's `Executing` event, which the IPC bridge bypasses. Fixed in 0.6.3 by `ensure_online_connection.py`: reflects into `scriptengine.online._executor` and routes every online call through its public `ExecuteSource(source)` method (see `with_executor`). **When writing a new online tool, wrap each `online_app.X(...)` call in `with_executor(online_app.X, ...args)`** — without it the call hits Stack empty on real PLCs.
 5. **`set_pou_code` auto-saves to disk.** UI Ctrl+Z does NOT recover prior content. Read before overwriting; treat the project file as the source of truth, not the IDE buffer.
 
@@ -116,6 +117,7 @@ The `add_device.py`, `set_device_parameter.py`, `list_device_repository.py`, `cr
 9. **DUT names with `.`** are rejected by CODESYS. Don't use dots in identifier names (they're parsed as namespace separators).
 10. **`set_pou_code` content not formatted for diff inspection.** Every successful call hits disk and the project file's XML changes. There's no staging. Always read before overwriting; keep prior content in conversation context.
 11. **`is_simulation_mode` getter returns `None`** on the ifm AE3100 device descriptor (and probably others). The setter works; verification has to come from compile + Online -> Login working.
+12. **`se.system.execute_on_primary_thread()` is gone in SP21+.** The current watcher's marshalling call (watcher.py:230) raises on SP21 P5 and SP22 P1; the SP21 P5 stub `ScriptLib/Stubs/scriptengine/ScriptSystem.pyi` has zero matches for `primary_thread|invoke|marshal|dispatch|defer|async`. Persistent mode boots cleanly (ready.signal fires before the first marshal) and then every tool call fails with `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported`. **There is no per-command auto-fallback** — `--fallback-headless` is launch-time only. Workarounds: (a) restart with `--mode headless` (CODESYS spawns per-command, no marshalling, works on SP21+), or (b) apply the watcher rewrite documented in the deferred-work section. SP21 P3 specifically is the user's stated production target but has NOT been empirically verified by the fork; the breakpoint between P0 and P5 is unknown. If you're on SP21 and getting "Marshal error", that's this issue.
 
 ## Development workflow
 
@@ -142,7 +144,7 @@ Smoke-test recipe for live verification: `dev/SMOKE_TEST.md`.
 ## Working preferences
 
 - **Honest engineering review** over papering over rough edges. The user actively wants to know about regressions, capability gaps, and over-engineering.
-- **Production = CODESYS V3.5 SP21 Patch 3 on Windows.** SP19 is supported; SP16 is not (the user's adjacent COR.25333 project runs SP16 but the MCP itself targets SP21).
+- **Production target = CODESYS V3.5 SP21 Patch 3 on Windows.** SP19 / SP20 work end-to-end. SP21+ has the persistent-mode marshalling regression (pitfall #12) — must run `--mode headless` until the watcher rewrite ships. The user's machine currently has SP16 P5 + SP20.60 installed; the SP21 production target has NOT been live-verified from here. SP16 is not a supported runtime for new tools (the adjacent COR.25333 project uses SP16 via the watcher's incidental backward compat, not by design).
 - **Audit-then-implement, not implement-then-discover.** When something needs major change, multi-agent paper audit first. The audits in 0.6.0 / 0.6.1 / 0.6.2 caught real bugs; the agents ARE the right tool for design review.
 - **Live tests catch what static analysis can't.** The 0.6.2 BLOCKERs (`PROJECT_FILE_PATH` NameError, `list_device_repository` SP21 API mismatch) only surfaced in live `/mcp` calls. Always smoke-test after big changes.
 - **Tool descriptions are model-facing, not user-facing.** Keep them tight (~150 chars). Detail belongs in parameter `.describe()` or the README.
@@ -150,8 +152,9 @@ Smoke-test recipe for live verification: `dev/SMOKE_TEST.md`.
 
 ## Deferred work (capability backlog)
 
-From the v0.6.2 deep-test audit. None are "in progress"; flag if you start one.
+From the v0.6.2 deep-test audit + the 2026-05-19 SP21+ regression audit. None are "in progress"; flag if you start one.
 
+- **SP21+ watcher rewrite (forward-compat blocker, not a capability gap).** Replace the .NET background thread + `se.system.execute_on_primary_thread()` model with a single-threaded loop on the primary thread yielding via `se.system.delay(50)`. Reference implementation: [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) v0.4.2 (specifically `src/scripts/watcher.py`). Scope is contained — `watcher.py` only, TS side unchanged (`launcher.ts` already only polls for `ready.signal` and doesn't care if the script returns; under the new model the script runs forever and that's fine). Two SP21+-specific concerns to handle in the rewrite: (1) the script never returns, (2) CODESYS injects `KeyboardInterrupt` when the user clicks the "Click here to CANCEL this operation" modal — the watcher must swallow it in both the loop body and `system.delay()` so a Cancel click aborts only the current command, not the whole watcher. Live-test plan: smoke against SP20.60 (the local install with the old API intact — verify no regression), then against a real SP21 P3 install (verify the fix actually fires and the IDE stays clickable during a 50ms-delay tight loop; the fork only validated SP22 P1).
 - **`force_variable` / `release_force`** - bench commissioning needs forcing; `write_variable` is transient against a running app.
 - **`write_variables_batch`** - atomic recipe write (currently 12 IPC round-trips per scenario change).
 - **Array-slice `read_variable`** - returns first-line repr only; can't read `aROI[3..7]`.
