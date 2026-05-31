@@ -1,6 +1,6 @@
 {
   "name": "codesys-mcp-persistent",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "MCP server for CODESYS with persistent UI instance and file-based IPC",
   "main": "dist/server.js",
   "bin": {
