@@ -14,7 +14,12 @@ import { ScriptManager } from './script-manager';
 import { launcherLog } from './logger';
 
 const SESSION_DIR_PREFIX = 'codesys-mcp-persistent';
-const READY_TIMEOUT_MS = 60_000;
+// Cold first-launch of CODESYS V3.5 SP16 Patch 5 takes ~120s on a bench PC
+// before the watcher writes ready.signal. Default was 60s, which landed us
+// in 'error' state every time. Override via CODESYS_MCP_READY_TIMEOUT_MS.
+const READY_TIMEOUT_MS = Number(process.env.CODESYS_MCP_READY_TIMEOUT_MS) > 0
+  ? Number(process.env.CODESYS_MCP_READY_TIMEOUT_MS)
+  : 180_000;
 const READY_POLL_MS = 500;
 const SHUTDOWN_WAIT_MS = 5_000;
 const HEALTH_CHECK_INTERVAL_MS = 5_000;
@@ -36,11 +41,130 @@ export class CodesysLauncher implements ScriptExecutor {
     this.config = config;
   }
 
+  /**
+   * Scan %TEMP%/codesys-mcp-persistent/ for an existing live session and
+   * adopt it. Used at first launch() after an MCP-server restart, where the
+   * previous server left a perfectly good CODESYS+watcher running but the
+   * fresh CodesysLauncher has no PID recorded. Returns true if a session
+   * was adopted (state set to 'ready'), false otherwise.
+   *
+   * Adoption rules:
+   *   - The session's ready.signal must exist and parse as JSON.
+   *   - The PID recorded in ready.signal must still be alive.
+   *   - The recorded profile must match config.profileName (skip if mismatched).
+   *   - When multiple candidates exist, prefer the most-recently-modified
+   *     ready.signal (newest live session).
+   */
+  private async tryAdoptExistingSession(): Promise<boolean> {
+    try {
+      const sessionsRoot = path.join(os.tmpdir(), SESSION_DIR_PREFIX);
+      if (!fs.existsSync(sessionsRoot)) return false;
+      const entries = fs.readdirSync(sessionsRoot, { withFileTypes: true });
+      const candidates: Array<{ dir: string; pid: number; sig: string; mtime: number }> = [];
+      for (const ent of entries) {
+        if (!ent.isDirectory()) continue;
+        const dir = path.join(sessionsRoot, ent.name);
+        const sigPath = path.join(dir, 'ready.signal');
+        if (!fs.existsSync(sigPath)) continue;
+        let parsed: { pid?: number; python_version?: string } = {};
+        try {
+          parsed = JSON.parse(fs.readFileSync(sigPath, 'utf-8'));
+        } catch {
+          continue; // malformed ready.signal — skip
+        }
+        if (typeof parsed.pid !== 'number') continue;
+        // Profile gate: ready.signal records python_version including the
+        // profile string. Require config.profileName to appear in it.
+        if (parsed.python_version && this.config.profileName &&
+            !parsed.python_version.includes(this.config.profileName)) {
+          continue;
+        }
+        // Liveness check.
+        try { process.kill(parsed.pid, 0); } catch { continue; }
+        const mtime = fs.statSync(sigPath).mtimeMs;
+        candidates.push({ dir, pid: parsed.pid, sig: sigPath, mtime });
+      }
+      if (candidates.length === 0) return false;
+      candidates.sort((a, b) => b.mtime - a.mtime);
+      const chosen = candidates[0];
+      launcherLog.info(`Adopting existing session: PID ${chosen.pid} dir ${chosen.dir}`);
+      this.sessionId = path.basename(chosen.dir);
+      this.ipcDir = chosen.dir;
+      this.ipcClient = new IpcClient({ baseDir: this.ipcDir, ...DEFAULT_IPC_CONFIG });
+      await this.ipcClient.ensureDirectories();
+      this.pid = chosen.pid;
+      this.process = null; // we didn't spawn it; no ChildProcess handle
+      this.startedAt = chosen.mtime;
+      this.lastError = null;
+      this.setState('ready');
+      this.startHealthMonitor();
+      return true;
+    } catch (err) {
+      launcherLog.warn(`Adoption scan failed: ${err}`);
+      return false;
+    }
+  }
+
   /** Launch CODESYS with UI and watcher script */
   async launch(): Promise<void> {
     if (this.state === 'ready' || this.state === 'launching') {
       launcherLog.warn(`Cannot launch: state is ${this.state}`);
       return;
+    }
+
+    // First: try to adopt an existing live session left by a previous MCP
+    // server process. This closes out the "orphan CODESYS on MCP restart"
+    // problem — without it, a /mcp reconnect spawns a second CODESYS on top
+    // of the live one and they fight for project lockfiles. Only runs on a
+    // genuinely fresh launcher (no PID recorded yet); after that the
+    // error-recovery path below handles same-process retries.
+    if (this.pid === null && this.state === 'stopped') {
+      if (await this.tryAdoptExistingSession()) {
+        return;
+      }
+    }
+
+    // Recovery path: we previously timed out, but the CODESYS process the
+    // launcher spawned is still alive and its watcher has now written
+    // ready.signal (or is about to). Re-attach rather than spawning a fresh
+    // CODESYS on top — two instances would fight for project lockfiles. Cold
+    // SP16 P5 launches frequently exceed the historical 60s budget, so this
+    // path also covers the "MCP gave up too early" case independently of the
+    // timeout bump above.
+    if (this.state === 'error' && this.pid !== null && this.ipcDir && this.ipcClient) {
+      const stillAlive = this.isRunning();
+      if (stillAlive) {
+        const readyNow = await this.ipcClient.isReady();
+        if (readyNow) {
+          launcherLog.info(`Recovery: live PID ${this.pid} watcher already ready; attaching`);
+          this.lastError = null;
+          if (this.startedAt === null) this.startedAt = Date.now();
+          this.setState('ready');
+          this.startHealthMonitor();
+          return;
+        }
+        launcherLog.warn(`Recovery: PID ${this.pid} alive but watcher not ready yet — polling without respawn`);
+        this.setState('launching');
+        const recoverStart = Date.now();
+        while (Date.now() - recoverStart < READY_TIMEOUT_MS) {
+          if (await this.ipcClient.isReady()) {
+            this.lastError = null;
+            if (this.startedAt === null) this.startedAt = Date.now();
+            this.setState('ready');
+            launcherLog.info('CODESYS watcher is ready (recovery path)');
+            this.startHealthMonitor();
+            return;
+          }
+          await this.sleep(READY_POLL_MS);
+        }
+        this.lastError = `Recovery: PID ${this.pid} still no ready.signal after ${READY_TIMEOUT_MS}ms`;
+        this.setState('error');
+        throw new Error(this.lastError);
+      }
+      // Recorded PID is dead — clear it and fall through to a fresh spawn.
+      launcherLog.info(`Recovery: PID ${this.pid} no longer alive; spawning fresh`);
+      this.pid = null;
+      this.process = null;
     }
 
     // Validate CODESYS exe exists
