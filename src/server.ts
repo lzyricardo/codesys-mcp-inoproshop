@@ -181,6 +181,28 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
   );
 
   s.tool(
+    'eval_python',
+    "[DEV] Execute arbitrary IronPython 2.7 inside the live CODESYS scriptengine. The supplied code is forwarded to the watcher verbatim — anything `print`ed lands in the response, and the call returns success if SCRIPT_SUCCESS is printed before exit. Intended for ScriptEngine API audits, NOT routine use; do NOT invoke the IDE's 'Login' command (it hangs the IDE primary thread). Common imports already available: scriptengine, sys, os.",
+    {
+      code: z.string().describe("IronPython 2.7 source. Has access to module `scriptengine`. Must print `SCRIPT_SUCCESS` (literal) before sys.exit(0) for the tool to report success."),
+      timeoutMs: z.number().int().positive().optional().describe("Timeout in ms (default 30000)."),
+    },
+    async (args: { code: string; timeoutMs?: number }) => {
+      const result = await executor.executeScript(args.code, args.timeoutMs ?? 30_000);
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      return {
+        content: [{
+          type: 'text' as const,
+          text: success
+            ? result.output
+            : `eval_python failed.\n--- output ---\n${result.output}${result.error ? '\n--- error ---\n' + result.error : ''}`,
+        }],
+        isError: !success,
+      };
+    }
+  );
+
+  s.tool(
     'get_codesys_status',
     'Get the current status of the CODESYS instance (state, PID, mode).',
     async () => {
@@ -227,48 +249,104 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'create_project',
-    'Creates a new CODESYS project from the standard template.',
+    "Create a new CODESYS project from a template. By default copies the bundled Standard.project. Pass templatePath to copy a different .project file (Option A), or templateName to instantiate a template registered with CODESYS's Template Manager — e.g. an ifm AE3100 template from an installed device package (Option B). Use list_project_templates to discover valid templateName / templatePath values.",
     {
       filePath: z.string().describe("Path where the new project file should be created."),
+      templatePath: z.string().optional().describe("Optional path to a .project file to copy as the template. Use when you have a known-good reference project on disk."),
+      templateName: z.string().optional().describe("Optional name of a template registered with CODESYS (as seen in File > New Project > Standard Project from Template). Resolved via ScriptEngine; use list_project_templates to discover names."),
     },
-    async (args: { filePath: string }) => {
+    async (args: { filePath: string; templatePath?: string; templateName?: string }) => {
       const absPath = path.normalize(
         path.isAbsolute(args.filePath) ? args.filePath : path.join(workspaceDir, args.filePath)
       );
 
-      // Find template project
+      // templateName takes precedence over templatePath (more specific intent).
+      // If neither is provided, fall back to the bundled Standard.project copy.
+      let mode: 'name' | 'path';
       let templatePath = '';
-      try {
-        const baseDir = path.dirname(path.dirname(config.codesysPath));
-        templatePath = path.normalize(path.join(baseDir, 'Templates', 'Standard.project'));
+      let templateName = '';
+
+      if (args.templateName && args.templateName.trim().length > 0) {
+        mode = 'name';
+        templateName = args.templateName.trim();
+      } else if (args.templatePath && args.templatePath.trim().length > 0) {
+        mode = 'path';
+        templatePath = path.normalize(
+          path.isAbsolute(args.templatePath) ? args.templatePath : path.join(workspaceDir, args.templatePath)
+        );
         if (!(await fileExists(templatePath))) {
-          const programData = process.env.ALLUSERSPROFILE || process.env.ProgramData || 'C:\\ProgramData';
-          const pd1 = path.normalize(path.join(programData, 'CODESYS', 'CODESYS', config.profileName, 'Templates', 'Standard.project'));
-          if (await fileExists(pd1)) {
-            templatePath = pd1;
-          } else {
-            const pd2 = path.normalize(path.join(programData, 'CODESYS', 'Templates', 'Standard.project'));
-            if (await fileExists(pd2)) {
-              templatePath = pd2;
+          return {
+            content: [{ type: 'text' as const, text: `Template Error: templatePath does not exist: ${templatePath}` }],
+            isError: true,
+          };
+        }
+      } else {
+        // Default: bundled Standard.project, same lookup chain as before.
+        mode = 'path';
+        try {
+          const baseDir = path.dirname(path.dirname(config.codesysPath));
+          templatePath = path.normalize(path.join(baseDir, 'Templates', 'Standard.project'));
+          if (!(await fileExists(templatePath))) {
+            const programData = process.env.ALLUSERSPROFILE || process.env.ProgramData || 'C:\\ProgramData';
+            const pd1 = path.normalize(path.join(programData, 'CODESYS', 'CODESYS', config.profileName, 'Templates', 'Standard.project'));
+            if (await fileExists(pd1)) {
+              templatePath = pd1;
             } else {
-              throw new Error('Standard template project file not found.');
+              const pd2 = path.normalize(path.join(programData, 'CODESYS', 'Templates', 'Standard.project'));
+              if (await fileExists(pd2)) {
+                templatePath = pd2;
+              } else {
+                throw new Error('Standard template project file not found. Pass templatePath or templateName explicitly.');
+              }
             }
           }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return {
+            content: [{ type: 'text' as const, text: `Template Error: ${msg}` }],
+            isError: true,
+          };
         }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return {
-          content: [{ type: 'text' as const, text: `Template Error: ${msg}` }],
-          isError: true,
-        };
       }
 
       const script = scriptManager.prepareScript('create_project', {
+        TEMPLATE_MODE: mode,
         PROJECT_FILE_PATH: absPath,
         TEMPLATE_PROJECT_PATH: templatePath,
+        TEMPLATE_NAME: templateName,
       });
       const result = await executor.executeScript(script);
-      return formatToolResponse(result, `Project created from template: ${absPath}`);
+      const sourceDesc = mode === 'name' ? `template '${templateName}'` : `template file ${templatePath}`;
+      return formatToolResponse(result, `Project created from ${sourceDesc}: ${absPath}`);
+    }
+  );
+
+  s.tool(
+    'list_project_templates',
+    "List project templates known to this CODESYS install. Combines (1) templates registered via CODESYS's Template Manager — what File > New Project > Standard Project from Template shows — and (2) a filesystem scan of well-known template locations under %ProgramData%/CODESYS. Returns {name, path, source} per template; pass `name` to create_project(templateName=...) or `path` to create_project(templatePath=...).",
+    {
+      extraTemplateDir: z.string().optional().describe("Optional additional directory to scan for .project / .projecttemplate files."),
+    },
+    async (args: { extraTemplateDir?: string }) => {
+      const script = scriptManager.prepareScriptWithHelpers(
+        'list_project_templates',
+        { EXTRA_TEMPLATE_DIR: args.extraTemplateDir ?? '' },
+        ['_text_utils']
+      );
+      const result = await executor.executeScript(script, 60_000);
+      const success = result.success && result.output.includes('SCRIPT_SUCCESS');
+      if (!success) return formatToolResponse(result, '');
+      const parsed = parseResultJson<{
+        templates: Array<{ name: string | null; path: string | null; source: string }>;
+        count: number;
+        api_attempts: string[];
+        filesystem_hits: number;
+      }>(result.output);
+      if (!parsed.ok) return formatToolResponse(result, '');
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(parsed.data, null, 2) }],
+        isError: false,
+      };
     }
   );
 
