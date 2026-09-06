@@ -132,7 +132,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'launch_codesys',
-    'Manually launch CODESYS with UI. Use when --no-auto-launch was set.',
+    'Warm up the persistent CODESYS/InoProShop instance ahead of time. Optional with the new lazy default: the first tool call launches it automatically.',
     async () => {
       if (!launcher) {
         return {
@@ -1900,6 +1900,38 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       }
     );
     executor.swap(persistentLauncher, launchReady);
+  } else if (launcher && config.mode === 'persistent') {
+    // 惰性启动（persistent 模式的默认行为）：MCP 服务器连接时**不**拉起
+    // InoProShop，只有第一次真正的工具调用才启动，启动后复用同一个窗口。
+    // 这样「打开 WorkBuddy」或「启用该 MCP」都不会弹出 IDE 窗口，
+    // 同时保留了 persistent 单实例、不再每次调用弹新窗口的行为。
+    const persistentLauncher = launcher;
+    serverLog.info(
+      'Persistent mode, autoLaunch off — arming lazy launch. ' +
+        'InoProShop will start on the first tool call only.'
+    );
+    executor.armLazy(() => {
+      serverLog.info('First tool call received — launching InoProShop on demand...');
+      return persistentLauncher.launch().then(
+        () => {
+          executionMode = 'persistent';
+          executor.swapNow(persistentLauncher);
+          serverLog.info('Lazy launch ready; executor switched to persistent.');
+        },
+        (err) => {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          serverLog.error(`Lazy persistent launch failed: ${errMsg}`);
+          if (config.fallbackHeadless) {
+            serverLog.warn('Continuing in headless mode (fallback).');
+          } else {
+            serverLog.error(
+              'No fallback configured; tool calls will keep using headless executor.'
+            );
+          }
+          throw err;
+        }
+      );
+    });
   }
 
   // ─── Graceful Shutdown ───────────────────────────────────────────────

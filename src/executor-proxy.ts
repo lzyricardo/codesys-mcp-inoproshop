@@ -73,7 +73,29 @@ export class ExecutorProxy implements ScriptExecutor {
     return this.inner;
   }
 
+  /** 一次性惰性启动器槽位。第一次 executeScript 被调用时消费，之后置空。
+   *  用途：MCP 服务器连接时不拉起 InoProShop，只有真正有工具调用时才启动，
+   *  避免「打开 WorkBuddy / 启用 MCP 就弹 IDE 窗口」。 */
+  private lazyStarter: (() => Promise<void>) | null = null;
+
+  /** 注册一次性惰性启动器。starter 由调用方负责把 executor 切到 persistent
+   *  （内部调用 swapNow），本方法只做「第一次调用时触发一次」。 */
+  armLazy(starter: () => Promise<void>): void {
+    this.lazyStarter = starter;
+  }
+
   async executeScript(content: string, timeoutMs?: number): Promise<IpcResult> {
+    // 惰性启动：第一次调用时 kick 一次并等待完成。抛错则吞掉、保持当前 inner
+    // （HeadlessExecutor）继续执行 —— 等价于 fallback-headless。
+    if (this.lazyStarter) {
+      const s = this.lazyStarter;
+      this.lazyStarter = null;
+      try {
+        await s();
+      } catch {
+        // 启动失败：不再重试（避免每次调用都卡满 ready-timeout），继续 headless。
+      }
+    }
     await this.readyPromise;
     return this.inner.executeScript(content, timeoutMs);
   }

@@ -52,7 +52,10 @@ program
     'Execution mode: persistent (UI) or headless (--noUI)',
     'persistent'
   )
-  .option('--no-auto-launch', 'Do not auto-launch InoProShop on startup')
+  .option(
+    '--auto-launch',
+    'Auto-launch InoProShop when the MCP server starts. DEFAULT OFF: InoProShop is launched only on the first tool call (lazy), so enabling the MCP or opening WorkBuddy never pops an IDE window.'
+  )
   .option('--fallback-headless', 'Fall back to headless if persistent fails', true)
   .option('--keep-alive', 'Keep InoProShop running after server stops', false)
   .option('--kill-existing-inoproshop', 'Kill any running InoProShop.exe before launching (dev convenience; off by default)', false)
@@ -107,7 +110,8 @@ if (opts.detect) {
     codesysPath: opts.codesysPath.trim(),
     profileName: opts.codesysProfile.trim(),
     workspaceDir: opts.workspace.trim(),
-    autoLaunch: opts.autoLaunch !== false,
+    // 默认惰性启动：不加 --auto-launch 就不在 MCP 启动时拉起 InoProShop。
+    autoLaunch: opts.autoLaunch === true,
     keepAlive: opts.keepAlive || false,
     killExistingCodesys: opts.killExistingInoproshop || false,
     timeoutMs: parseInt(opts.timeout, 10) || 900000,
