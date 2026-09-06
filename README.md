@@ -80,7 +80,7 @@ Claude Code / `.mcp.json`：
 | `-f, --codesys-profile <name>` | InoProShop profile 名称 | `InoProShop(V1.9.1.6)` |
 | `-w, --workspace <dir>` | 相对工程路径所用的工作目录 | 当前目录 |
 | `-m, --mode <mode>` | `persistent` 或 `headless` | `persistent` |
-| `--no-auto-launch` | 启动时不要自动启动 InoProShop | 默认自动启动 |
+| `--auto-launch` | 启动 MCP 服务器时就自动启动 InoProShop | 默认关（惰性：首次工具调用才启动） |
 | `--fallback-headless` | 若常驻启动失败，回退到 headless | `true` |
 | `--keep-alive` | 服务器停止后仍保留 InoProShop 运行 | `false` |
 | `--kill-existing-inoproshop` | 启动前先杀掉任何正在运行的 `InoProShop.exe`（仅开发用） | `false` |
@@ -113,7 +113,7 @@ Claude Code / `.mcp.json`：
 
 ## 执行模式
 
-**常驻（默认）。** 启动时，启动器会扫描 `%TEMP%/inoproshop-mcp-persistent/` 寻找存活的会话（profile 匹配、PID 存活、存在 `ready.signal`）并接管；否则就 spawn `InoProShop.exe --runscript=watcher.py`（不带 `--noUI`）。watcher 写入 `ready.signal`，然后起一个后台线程轮询 `commands/` 目录。结果落在 `results/`；Node 端以指数退避轮询。IDE 在两次调用之间保持可交互。
+**常驻（默认，惰性）。** MCP 服务器连接时**不**启动 InoProShop —— 首次工具调用才会触发启动器扫描 `%TEMP%/inoproshop-mcp-persistent/`，寻找存活的会话（profile 匹配、PID 存活、存在 `ready.signal`）并接管；找不到才 spawn `InoProShop.exe --runscript=watcher.py`（不带 `--noUI`）。watcher 写入 `ready.signal`，然后起一个后台线程轮询 `commands/` 目录。结果落在 `results/`；Node 端以指数退避轮询。IDE 在两次调用之间保持可交互，之后所有调用复用同一实例。若首次冷启动失败，`ExecutorProxy` 会吞掉异常并保留 headless 执行器，不阻塞后续调用。传 `--auto-launch` 可恢复旧行为（连接即后台启动）。
 
 **Headless。** 每次工具调用都新启一个 `--noUI` 的 InoProShop 进程，跑完脚本即退出。无 UI、也无单实例复用。用于 `--mode headless`，或作为常驻启动失败时的回退。
 
@@ -153,7 +153,7 @@ src/
   ipc.ts              基于文件的 IPC 传输（commands/ + results/）
   headless.ts         headless 回退执行器（--noUI）
   script-manager.ts   IronPython 2.7 模板加载 + 插值
-  executor-proxy.ts   后台自动启动期间的竞态安全执行器切换
+  executor-proxy.ts   惰性启动 + 竞态安全的执行器切换（首次调用触发 armLazy）
   result-parser.ts    RESULT_JSON 标记提取
   scripts/            IronPython 2.7 watcher + 辅助脚本 + 工具脚本
 test/

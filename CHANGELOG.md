@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.1 — 2026-09-07 (lazy launch)
+
+MCP 连接时不再启动 InoProShop；首次工具调用才冷启动，之后复用同一实例。`persistent` 单实例行为不变，`headless` 模式不变。
+
+### Changed
+- **默认惰性启动。** 旧行为：MCP 服务器连接时后台 `launch()` 拉起 `InoProShop.exe`（弹一个 IDE 窗口）。新行为：连接时只准备启动器，`ExecutorProxy` 装上一个一次性启动器（`armLazy`）；第一次 `executeScript` 才触发 `launch()`，启动成功后切换到持久执行器，后续调用复用。
+- **`--no-auto-launch` → `--auto-launch`。** flag 反向，默认关。需要恢复"连接即启动"的旧行为时传 `--auto-launch`。
+- **启动失败不再阻塞。** 惰性启动失败时 `ExecutorProxy` 吞掉异常并保留 headless 执行器，后续调用继续工作（等价 fallback）；不会像旧路径那样让调用方拿到 `ready` 超时错误。
+
+### Implementation
+- `bin.ts`：flag 定义与默认值反转；`autoLaunch: opts.autoLaunch === true`。
+- `server.ts`：`config.autoLaunch` 为假时不再 `void launcher.launch()`，改为 `executor.armLazy(() => launcher.launch())`；`launch_codesys` 工具描述更新为"首次工具调用会自动启动"。
+- `executor-proxy.ts`：新增 `armLazy(starter)` 与 `lazyStarter` 字段；`executeScript` 首次调用触发启动器（一次性，触发后置空）。
+- README：`--auto-launch` 参数说明、执行模式段、文件结构注释三处同步。
+
+### Why
+打开 WorkBuddy 或启用该 MCP 时不应弹窗。旧行为把"连接 MCP"和"打开 IDE"绑定，让 MCP 看起来像个 IDE 前置启动器；新行为让 MCP 变成纯粹的工具代理，IDE 只在真正需要时才出现。
+
 ## 1.0.0 — 2026-09-07 (InoProShop fork)
 
 Improved fork of `codesys-mcp-persistent` (luke-harriman), adapted for InoProShop and hardened against the repeated-window-pop defect of the original `InoProShop_LIMIT_MCP` bundle.
