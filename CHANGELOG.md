@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.2 — 2026-09-07 (docs: README 重写 + 版本记录约定)
+
+README 整体重写以提升可读性；新增 CONTRIBUTING.md 把"每次推送做版本记录"固化为项目约定。
+
+### Changed
+- **README 重写。** 原文开头两段密集术语堆砌、执行模式段是一句 120 字长句、40+ 工具挤成一排逗号列表、故障排查是纯文字。改后：
+  - 一句话说明 + **5 分钟上手**（clone → build → mcp.json → 完成）。
+  - 新增 **before/after 对比表**（原始 LIMIT 版 vs 本项目），痛点一眼看清。
+  - 新增 **ASCII 架构图**，三种执行模式用列表讲清（惰性常驻 / 自动常驻 / Headless）。
+  - CLI 参数拆成**常用 / 高级**两组表格。
+  - 工具清单改为**分类表格**（管理 / 工程 / 编程对象 / 在线 / 库 / 设备树）。
+  - 故障排查改为**现象 → 原因 → 解决**三列表格。
+  - 新增**版本记录**段，说明语义化版本约定。
+  - 构建命令改用 `npx tsc && cp -r src/scripts dist/scripts`，标注 `npm run build` 会被 safe-delete 拦截。
+- **新增 CONTRIBUTING.md。** 固化提交流程：Conventional Commits 规范 + 版本位映射、CHANGELOG 记录格式、本机 PowerShell 推送流程（PATH 大小写清理 + sslVerify 临时关闭 + Start-Process 捕获 stderr）、发布清单。
+
+### Why
+README 原先对新读者不友好——要读完全篇才知道怎么装、怎么配、什么时候 IDE 会启动。重写后 5 分钟上手段直接给可复制的命令和配置。版本记录约定固化进 CONTRIBUTING.md，避免后续推送漏记 CHANGELOG。
+
 ## 1.0.1 — 2026-09-07 (lazy launch)
 
 MCP 连接时不再启动 InoProShop；首次工具调用才冷启动，之后复用同一实例。`persistent` 单实例行为不变，`headless` 模式不变。
