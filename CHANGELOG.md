@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3 — 2026-09-07 (docs: 41 个工具逐个说明)
+
+README 的工具清单从"逗号列表"扩展为"每个工具一行说明"，描述直接从 `src/server.ts` 的工具注册处抽取翻译，保留了参数要求、警告、路径格式等关键信息。
+
+### Changed
+- **工具清单重写。** 原格式每类一行逗号分隔（41 个工具挤成 6 行，无法扫读）。改后按 6 个类别（管理 / 工程 / 编程对象 / 在线运行 / 库 / 设备树）各一张表，每行 `工具名 | 作用说明`。
+- **描述来源。** 从 `server.ts` 的 `s.tool('name', 'description', ...)` 注册处批量抽取（41 个），翻译为中文，保留：参数格式要求（如 `read_variable` 的 `'GVL.var'` 路径格式）、警告（如 `delete_object` 不可撤销、`write_variable` 是 FORCED 值、`monitor_variables` 阻塞 UI 线程 60s）、使用顺序提示（如 `set_credentials` 在 `connect_to_device` 之前、`inspect_device_node` 配合 `set_device_parameter`）。
+- **资源 URI 单独成表。** 3 个资源从工具清单中拆出，独立一张表。
+
 ## 1.0.2 — 2026-09-07 (docs: README 重写 + 版本记录约定)
 
 README 整体重写以提升可读性；新增 CONTRIBUTING.md 把"每次推送做版本记录"固化为项目约定。
