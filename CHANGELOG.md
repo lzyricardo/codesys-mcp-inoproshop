@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.0 — 2026-09-07 (InoProShop fork)
+
+Improved fork of `codesys-mcp-persistent` (luke-harriman), adapted for InoProShop and hardened against the repeated-window-pop defect of the original `InoProShop_LIMIT_MCP` bundle.
+
+### Added / changed
+- **Single persistent InoProShop instance.** One `InoProShop.exe` is launched detached (no shell) and reused for every tool call; the IDE no longer pops a new window per request.
+- **Session adoption on MCP restart.** The launcher scans `%TEMP%/inoproshop-mcp-persistent/` and re-adopts a live session (matched by profile + live PID + `ready.signal`) instead of spawning a second window. The spawned InoProShop is tagged with `INOPROSHOP_MCP_PROFILE` and the watcher records it in `ready.signal` so adoption is profile-precise.
+- **InoProShop defaults.** Default executable path, profile `InoProShop(V1.9.1.6)`, and `--detect` scanning of both `…\Inovance Control\CODESYS\Common\` and `…\Inovance Control\InoProShop\CODESYS\Common\` layouts.
+- **Longer timeouts for stability.** Default command timeout `60000 → 900000` ms; ready-signal timeout `60000 → 180000` ms (overridable via `--ready-timeout` / `INOPROSHOP_MCP_READY_TIMEOUT_MS`).
+- `--kill-existing-inoproshop` flag (dev convenience; off by default to protect manual IDE sessions).
+- `test/integration-launch.ts`: real InoProShop integration test proving single-instance reuse + reconnect adoption.
+
+### Caveat
+- **V1.10.0.3 compatibility unverified.** Persistent mode depends on `se.system.execute_on_primary_thread()`, which upstream CODESYS removed in SP21+. If V1.10.0.3 drops it, use `--mode headless`.
+
 ## 0.6.3 — 2026-05-20
 
 Bug-fix release. Unblocks every online tool against a real PLC. Three independent bugs in the V3-scripting-driven online path were combining to make `connect_to_device`, `download_to_device`, `start_stop_application`, `get_application_state`, `read_variable`, `write_variable`, and `monitor_variables` fail when invoked through MCP (IPC-driven scripting) against actual hardware. Verified end-to-end on V3 SP16 P5 against an ifm AE3100 IIoT Controller.

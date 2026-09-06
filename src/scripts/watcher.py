@@ -77,9 +77,13 @@ try:
 
     # --- Write ready signal EARLY (before .NET imports) ---
     ready_path = os.path.join(IPC_BASE_DIR, "ready.signal")
+    # Record the launching profile so the Node launcher can adopt this exact
+    # session on an MCP-server restart (single-instance reuse, no second window).
+    _launch_profile = os.environ.get("INOPROSHOP_MCP_PROFILE", "")
     info = {
         "version": WATCHER_VERSION,
         "python_version": sys.version,
+        "profile": _launch_profile,
         "platform": sys.platform,
         "ipc_dir": IPC_BASE_DIR,
         "timestamp": time.time(),

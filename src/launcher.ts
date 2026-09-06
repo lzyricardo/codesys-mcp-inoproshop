@@ -13,11 +13,14 @@ import { IpcClient, DEFAULT_IPC_CONFIG } from './ipc';
 import { ScriptManager } from './script-manager';
 import { launcherLog } from './logger';
 
-const SESSION_DIR_PREFIX = 'codesys-mcp-persistent';
-// Cold first-launch of CODESYS V3.5 SP16 Patch 5 takes ~120s on a bench PC
-// before the watcher writes ready.signal. Default was 60s, which landed us
-// in 'error' state every time. Override via CODESYS_MCP_READY_TIMEOUT_MS.
-const READY_TIMEOUT_MS = Number(process.env.CODESYS_MCP_READY_TIMEOUT_MS) > 0
+const SESSION_DIR_PREFIX = 'inoproshop-mcp-persistent';
+// Cold first-launch of InoProShop V1.9.1.6 takes ~120s on a bench PC before
+// the watcher writes ready.signal. Default was 60s, which landed us in
+// 'error' state every time. Override via INOPROSHOP_MCP_READY_TIMEOUT_MS
+// (CODESYS_MCP_READY_TIMEOUT_MS is still honored for upstream compat).
+const READY_TIMEOUT_MS = Number(process.env.INOPROSHOP_MCP_READY_TIMEOUT_MS) > 0
+  ? Number(process.env.INOPROSHOP_MCP_READY_TIMEOUT_MS)
+  : Number(process.env.CODESYS_MCP_READY_TIMEOUT_MS) > 0
   ? Number(process.env.CODESYS_MCP_READY_TIMEOUT_MS)
   : 180_000;
 const READY_POLL_MS = 500;
@@ -66,17 +69,19 @@ export class CodesysLauncher implements ScriptExecutor {
         const dir = path.join(sessionsRoot, ent.name);
         const sigPath = path.join(dir, 'ready.signal');
         if (!fs.existsSync(sigPath)) continue;
-        let parsed: { pid?: number; python_version?: string } = {};
+        let parsed: { pid?: number; python_version?: string; profile?: string } = {};
         try {
           parsed = JSON.parse(fs.readFileSync(sigPath, 'utf-8'));
         } catch {
           continue; // malformed ready.signal — skip
         }
         if (typeof parsed.pid !== 'number') continue;
-        // Profile gate: ready.signal records python_version including the
-        // profile string. Require config.profileName to appear in it.
-        if (parsed.python_version && this.config.profileName &&
-            !parsed.python_version.includes(this.config.profileName)) {
+        // Profile gate: ready.signal records the launching profile in `profile`.
+        // Skip sessions launched under a different profile so two MCP servers
+        // configured for different InoProShop versions never share a window.
+        // Legacy sessions without a `profile` field are still adopted (best effort).
+        if (parsed.profile && this.config.profileName &&
+            parsed.profile !== this.config.profileName) {
           continue;
         }
         // Liveness check.
@@ -232,6 +237,14 @@ export class CodesysLauncher implements ScriptExecutor {
 
     launcherLog.info(`Spawning: ${this.config.codesysPath} ${codesysArgs.join(' ')}`);
 
+    // Tag the spawned InoProShop session with the profile name so a later
+    // MCP-server restart can adopt this exact session (single-instance reuse)
+    // instead of opening a second window. The watcher reads this and records
+    // it in ready.signal.
+    const launchEnv = {
+      ...process.env,
+      INOPROSHOP_MCP_PROFILE: this.config.profileName,
+    };
     // Spawn CODESYS detached with UI visible
     this.process = spawn(this.config.codesysPath, codesysArgs, {
       detached: true,
@@ -239,6 +252,7 @@ export class CodesysLauncher implements ScriptExecutor {
       windowsHide: false,
       stdio: 'ignore',
       cwd: codesysDir,
+      env: launchEnv,
     });
 
     this.pid = this.process.pid ?? null;

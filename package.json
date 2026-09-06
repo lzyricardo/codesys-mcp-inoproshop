@@ -1,15 +1,16 @@
 {
-  "name": "codesys-mcp-persistent",
-  "version": "0.6.3",
-  "description": "MCP server for CODESYS with persistent UI instance and file-based IPC",
-  "main": "dist/server.js",
+  "name": "codesys-mcp-inoproshop",
+  "version": "1.0.0",
+  "description": "MCP server for InoProShop V1.9.1.6 / V1.10.0.3 with persistent UI instance and file-based IPC. Improved from codesys-mcp-persistent (luke-harriman) to fix repeated window pop-ups by reusing a single watcher session.",
+  "main": "dist/bin.js",
   "bin": {
-    "codesys-mcp-persistent": "dist/bin.js"
+    "codesys-mcp-inoproshop": "dist/bin.js"
   },
   "files": [
     "dist/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -21,16 +22,26 @@
   },
   "keywords": [
     "codesys",
-    "mcp",
+    "inoproshop",
+    "inovance",
     "plc",
+    "mcp",
     "automation",
     "persistent",
-    "ui"
+    "ui",
+    "single-instance"
   ],
-  "author": "luke-harriman",
+  "author": "Ricardo (improved for InoProShop; upstream by luke-harriman)",
   "repository": {
     "type": "git",
     "url": "https://github.com/luke-harriman/Codesys-MCP.git"
+  },
+  "upstream": {
+    "name": "codesys-mcp-persistent",
+    "version": "0.6.3",
+    "author": "luke-harriman",
+    "url": "https://github.com/luke-harriman/Codesys-MCP.git",
+    "note": "Improved fork. Persistent-UI core retained from upstream; InoProShop-specific defaults and CLI ergonomics added."
   },
   "homepage": "https://github.com/luke-harriman/Codesys-MCP#readme",
   "license": "MIT",
