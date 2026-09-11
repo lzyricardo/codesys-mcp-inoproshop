@@ -250,7 +250,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       const script = scriptManager.prepareScriptWithHelpers(
         'open_project', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'ensure_project_open']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(result, `Project opened: ${args.filePath}`);
     }
   );
@@ -323,7 +323,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         TEMPLATE_PROJECT_PATH: templatePath,
         TEMPLATE_NAME: templateName,
       });
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       const sourceDesc = mode === 'name' ? `template '${templateName}'` : `template file ${templatePath}`;
       return formatToolResponse(result, `Project created from ${sourceDesc}: ${absPath}`);
     }
@@ -369,7 +369,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       const script = scriptManager.prepareScriptWithHelpers(
         'save_project', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'ensure_project_open']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(result, `Project saved: ${args.projectFilePath}`);
     }
   );
@@ -400,7 +400,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `POU '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
@@ -444,7 +444,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Code set for '${sanPouPath}' in ${args.projectFilePath}. Project saved.`
@@ -474,7 +474,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Property '${args.propertyName}' created under '${sanParentPath}' in ${args.projectFilePath}. Project saved.`
@@ -504,7 +504,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Method '${args.methodName}' created under '${sanParentPath}' in ${args.projectFilePath}. Project saved.`
@@ -592,7 +592,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       const script = scriptManager.prepareScriptWithHelpers(
         'get_compile_messages', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'ensure_project_open']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
 
       const success = result.success && result.output.includes('SCRIPT_SUCCESS');
       if (!success) {
@@ -671,7 +671,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `DUT '${args.name}' (${args.dutType}) created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
@@ -701,7 +701,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `GVL '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
@@ -729,7 +729,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Folder '${args.folderName}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
@@ -786,7 +786,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Object '${sanObjPath}' deleted from ${args.projectFilePath}. Project saved.`
@@ -814,7 +814,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'find_object_by_path']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Object '${sanObjPath}' renamed to '${args.newName}' in ${args.projectFilePath}. Project saved.`
@@ -1042,7 +1042,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         'disconnect_from_device', { PROJECT_FILE_PATH: escaped },
         ['ensure_project_open']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(result, `Disconnected from device for ${args.projectFilePath}.`);
     }
   );
@@ -1059,7 +1059,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         'get_application_state', { PROJECT_FILE_PATH: escaped },
         ['ensure_project_open', 'ensure_online_connection']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
 
       const success = result.success && result.output.includes('SCRIPT_SUCCESS');
       if (!success) {
@@ -1101,7 +1101,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open', 'ensure_online_connection']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
 
       const success = result.success && result.output.includes('SCRIPT_SUCCESS');
       if (!success) {
@@ -1142,7 +1142,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['ensure_project_open', 'ensure_online_connection']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Variable '${args.variablePath}' set to '${args.value}'.`
@@ -1187,7 +1187,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['ensure_project_open', 'ensure_online_connection']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Application ${args.action} executed for ${args.projectFilePath}.`
@@ -1208,7 +1208,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       const script = scriptManager.prepareScriptWithHelpers(
         'list_project_libraries', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'ensure_project_open']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
 
       const success = result.success && result.output.includes('SCRIPT_SUCCESS');
       if (!success) {
@@ -1686,7 +1686,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         },
         ['_text_utils', 'ensure_project_open']
       );
-      const result = await executor.executeScript(script);
+      const result = await executor.executeScript(script, config.timeoutMs);
       return formatToolResponse(
         result,
         `Library '${args.libraryName}' added to ${args.projectFilePath}. Project saved.`
@@ -1702,7 +1702,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     async (uri) => {
       try {
         const script = scriptManager.loadTemplate('check_status');
-        const result = await executor.executeScript(script);
+        const result = await executor.executeScript(script, config.timeoutMs);
 
         const outputLines = result.output.split(/[\r\n]+/).filter((l) => l.trim());
         const statusData: Record<string, string> = {};
@@ -1759,7 +1759,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         const script = scriptManager.prepareScriptWithHelpers(
           'get_project_structure', { PROJECT_FILE_PATH: escaped }, ['_text_utils', 'require_project_open']
         );
-        const result = await executor.executeScript(script);
+        const result = await executor.executeScript(script, config.timeoutMs);
 
         let structureText = `Error retrieving structure.\n\n${result.output}`;
         let isError = !result.success;
@@ -1820,7 +1820,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
           { PROJECT_FILE_PATH: escProjPath, POU_FULL_PATH: sanPouPath },
           ['_text_utils', 'require_project_open', 'find_object_by_path']
         );
-        const result = await executor.executeScript(script);
+        const result = await executor.executeScript(script, config.timeoutMs);
 
         let codeText = `Error retrieving code.\n\n${result.output}`;
         let isError = !result.success;

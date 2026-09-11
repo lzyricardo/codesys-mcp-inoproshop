@@ -116,13 +116,37 @@ try:
         def __init__(self):
             self._buffer = []
         def write(self, s):
-            self._buffer.append(str(s))
+            # IronPython 2.7 str(u'CJK') uses ascii and raises; keep unicode.
+            if s is None:
+                return
+            if isinstance(s, unicode):
+                self._buffer.append(s)
+            else:
+                try:
+                    self._buffer.append(s.decode('utf-8'))
+                except Exception:
+                    try:
+                        self._buffer.append(s.decode('gbk'))
+                    except Exception:
+                        self._buffer.append(unicode(repr(s), 'utf-8', 'replace'))
         def writelines(self, lines):
-            self._buffer.extend([str(l) for l in lines])
+            for l in lines:
+                self.write(l)
         def flush(self):
             pass
         def getvalue(self):
-            return ''.join(self._buffer)
+            if not self._buffer:
+                return u""
+            try:
+                return u"".join(self._buffer)
+            except Exception:
+                parts = []
+                for x in self._buffer:
+                    if isinstance(x, unicode):
+                        parts.append(x)
+                    else:
+                        parts.append(unicode(repr(x), 'utf-8', 'replace'))
+                return u"".join(parts)
 
     # --- Stop event ---
     _stop_event = ManualResetEvent(False)
@@ -143,15 +167,30 @@ try:
 
         _log("Processing command: %s" % request_id)
 
-        # Read command and script (file I/O - safe from bg thread)
+        # Read command and script as UTF-8 bytes. IronPython open(..., "r")
+        # uses the ANSI codepage (GBK here) and mojibakes Chinese paths.
         try:
-            with open(command_path, "r") as f:
-                command_data = json.loads(f.read())
+            with open(command_path, "rb") as f:
+                raw_cmd = f.read()
+            if isinstance(raw_cmd, str):
+                try:
+                    raw_cmd = raw_cmd.decode('utf-8')
+                except UnicodeDecodeError:
+                    raw_cmd = raw_cmd.decode('gbk')
+            command_data = json.loads(raw_cmd)
             script_path = command_data.get("scriptPath", "")
             if not os.path.exists(script_path):
                 raise IOError("Script file not found: %s" % script_path)
-            with open(script_path, "r") as f:
+            with open(script_path, "rb") as f:
                 script_code = f.read()
+            if isinstance(script_code, str):
+                try:
+                    script_code = script_code.decode('utf-8')
+                except UnicodeDecodeError:
+                    script_code = script_code.decode('gbk')
+            # IronPython exec() rejects raw \r in unicode source tokens.
+            if isinstance(script_code, unicode):
+                script_code = script_code.replace(u'\r\n', u'\n').replace(u'\r', u'\n')
         except Exception as read_err:
             _log("Error reading command: %s" % read_err)
             atomic_write(result_path, json.dumps({
@@ -248,7 +287,26 @@ try:
 
         # Write result (file I/O - safe from bg thread)
         if shared_result[0]:
-            atomic_write(result_path, json.dumps(shared_result[0]))
+            # ensure_ascii=False + unicode values: IronPython json.dumps(ensure_ascii=True)
+            # is broken for non-ASCII (py_encode_basestring_ascii decodes as utf-8).
+            try:
+                payload = shared_result[0]
+                for k in ("output", "error", "requestId"):
+                    if k in payload and payload[k] is not None and not isinstance(payload[k], unicode):
+                        try:
+                            payload[k] = payload[k].decode('utf-8')
+                        except Exception:
+                            payload[k] = unicode(repr(payload[k]), 'utf-8', 'replace')
+                atomic_write(result_path, json.dumps(payload, ensure_ascii=False))
+            except Exception as dumps_err:
+                _log("Result dumps error: %s" % dumps_err)
+                atomic_write(result_path, json.dumps({
+                    "requestId": request_id,
+                    "success": bool(shared_result[0].get("success")),
+                    "output": "",
+                    "error": "Result serialize error: %s" % dumps_err,
+                    "timestamp": time.time(),
+                }, ensure_ascii=True))
             _log("Result written: success=%s" % shared_result[0].get("success"))
         else:
             _log("ERROR: No result after timeout")

@@ -140,18 +140,27 @@ try:
 
     # Expanded attribute candidate sets. Different SPs and different device-
     # package authors use different property names; we sweep all the ones
-    # we've seen in the wild.
-    NAME_ATTRS = ('name', 'display_name', 'localized_name', 'localised_name',
-                  'title', 'identifier', 'module_name', 'get_name')
-    VENDOR_ATTRS = ('vendor', 'manufacturer', 'vendor_name', 'company',
+    # we've seen in the wild. CODESYS .NET properties are PascalCase, so we
+    # include the capitalized variants too -- a bare lowercase-only list
+    # silently returned null name/vendor on InoProShop V1.9.1.6 (which
+    # exposes Name/Vendor/etc.), making the whole repository enumerate to 0
+    # usable entries.
+    NAME_ATTRS = ('Name', 'name', 'DisplayName', 'display_name',
+                  'LocalizedName', 'localized_name', 'localised_name',
+                  'Title', 'title', 'Identifier', 'identifier',
+                  'ModuleName', 'module_name', 'get_name')
+    VENDOR_ATTRS = ('Vendor', 'vendor', 'Manufacturer', 'manufacturer',
+                    'VendorName', 'vendor_name', 'Company', 'company',
                     'get_vendor', 'get_manufacturer')
-    DESC_ATTRS = ('description', 'description_text', 'long_description',
-                  'short_description', 'get_description')
-    CATEGORY_ATTRS = ('category', 'category_path', 'categories', 'group',
-                      'device_category', 'get_category')
-    TYPE_ATTRS = ('type', 'device_type', 'type_id')
-    ID_ATTRS = ('Id', 'id', 'device_id')
-    VER_ATTRS = ('Version', 'version', 'device_version', 'get_version')
+    DESC_ATTRS = ('Description', 'description', 'DescriptionText',
+                  'description_text', 'LongDescription', 'long_description',
+                  'ShortDescription', 'short_description', 'get_description')
+    CATEGORY_ATTRS = ('Category', 'category', 'CategoryPath', 'category_path',
+                      'Categories', 'categories', 'Group', 'group',
+                      'DeviceCategory', 'device_category', 'get_category')
+    TYPE_ATTRS = ('Type', 'type', 'DeviceType', 'device_type', 'TypeId', 'type_id')
+    ID_ATTRS = ('Id', 'id', 'DeviceId', 'device_id')
+    VER_ATTRS = ('Version', 'version', 'DeviceVersion', 'device_version', 'get_version')
 
     # Capture diagnostic dir() of the first entry+desc so we have something to
     # work with when nothing matches. Cheap, only runs once.
@@ -189,14 +198,35 @@ try:
                 except Exception:
                     first_desc_dir = None
 
+        # On InoProShop V1.9.1.6 the human-readable metadata (name/vendor/...)
+        # lives on the nested DeviceInfo object exposed as entry.device_info,
+        # not on the DeviceID entry itself nor on a separate descriptor we can
+        # look up (descriptor_lookup_method comes back null). Fold
+        # entry.device_info into the probe chain so we don't return 729
+        # nameless entries.
+        dev_info = None
+        try:
+            dev_info = getattr(entry, 'device_info', None)
+        except Exception:
+            dev_info = None
+
         rec = {
-            u'name': _probe(desc, NAME_ATTRS) or _probe(entry, NAME_ATTRS),
-            u'vendor': _probe(desc, VENDOR_ATTRS) or _probe(entry, VENDOR_ATTRS),
-            u'description': _probe(desc, DESC_ATTRS),
-            u'device_type': device_type if device_type is not None else _probe(desc, TYPE_ATTRS),
-            u'device_id': device_id_raw if device_id_raw is not None else _probe(desc, ID_ATTRS),
-            u'version': version_raw if version_raw is not None else _probe(desc, VER_ATTRS),
-            u'category': _probe(desc, CATEGORY_ATTRS) or _probe(entry, CATEGORY_ATTRS),
+            u'name': (_probe(desc, NAME_ATTRS) or _probe(entry, NAME_ATTRS)
+                      or _probe(dev_info, NAME_ATTRS)),
+            u'vendor': (_probe(desc, VENDOR_ATTRS) or _probe(entry, VENDOR_ATTRS)
+                       or _probe(dev_info, VENDOR_ATTRS)),
+            u'description': (_probe(desc, DESC_ATTRS) or _probe(dev_info, DESC_ATTRS)),
+            u'device_type': (device_type if device_type is not None
+                             else _probe(desc, TYPE_ATTRS) or _probe(entry, TYPE_ATTRS)
+                             or _probe(dev_info, TYPE_ATTRS)),
+            u'device_id': (device_id_raw if device_id_raw is not None
+                           else _probe(desc, ID_ATTRS) or _probe(entry, ID_ATTRS)
+                           or _probe(dev_info, ID_ATTRS)),
+            u'version': (version_raw if version_raw is not None
+                         else _probe(desc, VER_ATTRS) or _probe(entry, VER_ATTRS)
+                         or _probe(dev_info, VER_ATTRS)),
+            u'category': (_probe(desc, CATEGORY_ATTRS) or _probe(entry, CATEGORY_ATTRS)
+                         or _probe(dev_info, CATEGORY_ATTRS)),
         }
 
         if rec[u'name'] is None and rec[u'vendor'] is None:

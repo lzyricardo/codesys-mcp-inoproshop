@@ -8,28 +8,48 @@ try:
     libraries = []
     lib_manager = None
 
-    # Find Library Manager object
-    # Pattern 1: Search for it by name in project tree
+    # Find the Library Manager node. CODESYS localizes this node name, so a
+    # bare find("Library Manager") misses it on non-English installs (e.g.
+    # Chinese InoProShop calls it "库管理器"). We try:
+    #   1. find() by a set of known localized names,
+    #   2. a type-based scan of the project tree (robust to any locale).
+    _LIB_MANAGER_NAMES = (
+        "Library Manager",          # English
+        "库管理器",                  # Chinese (InoProShop)
+        "Bibliotheksverwaltung",    # German
+        "Gestionnaire de bibliothèques",  # French
+    )
     try:
-        found_list = primary_project.find("Library Manager", True)
-        if found_list:
-            lib_manager = found_list[0]
-            print("DEBUG: Found Library Manager via find('Library Manager')")
+        for nm in _LIB_MANAGER_NAMES:
+            try:
+                found_list = primary_project.find(nm, True)
+                if found_list:
+                    lib_manager = found_list[0]
+                    print("DEBUG: Found Library Manager via find('%s')" % nm)
+                    break
+            except Exception:
+                continue
     except Exception as e:
-        print("DEBUG: find('Library Manager') failed: %s" % e)
+        print("DEBUG: localized find for Library Manager failed: %s" % e)
 
-    # Pattern 2: Search all children
     if not lib_manager:
         try:
-            all_children = primary_project.get_children(True)
-            for child in all_children:
-                child_name = getattr(child, 'get_name', lambda: '')()
-                if 'library' in child_name.lower() and 'manager' in child_name.lower():
+            for child in primary_project.get_children(True):
+                try:
+                    tname = type(child).__name__
+                except Exception:
+                    tname = ''
+                if 'librarymanager' in tname.lower() or 'libman' in tname.lower():
                     lib_manager = child
-                    print("DEBUG: Found Library Manager by name search: %s" % child_name)
+                    print("DEBUG: Found Library Manager by type scan: %s" % tname)
+                    break
+                cname = getattr(child, 'get_name', lambda: '')()
+                if cname and ('librarymanager' in cname.lower() or 'libman' in cname.lower()):
+                    lib_manager = child
+                    print("DEBUG: Found Library Manager by type-name scan: %s" % cname)
                     break
         except Exception as e:
-            print("DEBUG: Children search for Library Manager failed: %s" % e)
+            print("DEBUG: type-scan for Library Manager failed: %s" % e)
 
     if lib_manager:
         print("DEBUG: Library Manager found: %s" % getattr(lib_manager, 'get_name', lambda: '?')())

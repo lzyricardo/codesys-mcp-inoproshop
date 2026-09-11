@@ -27,6 +27,22 @@ const READY_POLL_MS = 500;
 const SHUTDOWN_WAIT_MS = 5_000;
 const HEALTH_CHECK_INTERVAL_MS = 5_000;
 
+// Adoption health probe.
+//
+// A session can pass `process.kill(pid, 0)` (process alive) yet be completely
+// wedged: if InoProShop's primary thread is blocked on a modal error dialog
+// (observed in the wild: the InvalidObjectGuidException "对象 GUID ... 无效"
+// storm), the watcher keeps running and ready.signal stays on disk, but NO
+// script ever executes — every command marshals onto a blocked thread and
+// hangs until timeout, so all 41 tools look broken. Before adopting a session
+// we therefore send a trivial script and require an answer.
+//
+// Override the probe budget with INOPROSHOP_MCP_ADOPT_PROBE_TIMEOUT_MS.
+const ADOPT_PROBE_SCRIPT = 'print("__MCP_ADOPT_PING_OK__")\n';
+const ADOPT_PROBE_TIMEOUT_MS = Number(process.env.INOPROSHOP_MCP_ADOPT_PROBE_TIMEOUT_MS) > 0
+  ? Number(process.env.INOPROSHOP_MCP_ADOPT_PROBE_TIMEOUT_MS)
+  : 15_000;
+
 export class CodesysLauncher implements ScriptExecutor {
   private config: LauncherConfig;
   private state: CodesysState = 'stopped';
@@ -91,7 +107,30 @@ export class CodesysLauncher implements ScriptExecutor {
       }
       if (candidates.length === 0) return false;
       candidates.sort((a, b) => b.mtime - a.mtime);
-      const chosen = candidates[0];
+
+      // Walk newest-first and adopt the first session that ANSWERS the health
+      // probe. Being alive is not enough — see probeSession() for why.
+      let chosen: (typeof candidates)[number] | null = null;
+      let lastProbeErr: string | null = null;
+      for (const cand of candidates) {
+        const probe = await this.probeSession(cand.dir);
+        if (probe.ok) {
+          chosen = cand;
+          break;
+        }
+        lastProbeErr = probe.error ?? 'unknown reason';
+        launcherLog.warn(
+          `Skipping unresponsive session PID ${cand.pid} (${cand.dir}): ${lastProbeErr}. ` +
+          `If InoProShop is stuck on an error dialog, dismiss it or end the process.`
+        );
+      }
+      if (!chosen) {
+        launcherLog.warn(
+          `Found ${candidates.length} candidate session(s) but none answered the health probe; ` +
+          `starting a fresh InoProShop instead. Last probe error: ${lastProbeErr}`
+        );
+        return false;
+      }
       launcherLog.info(`Adopting existing session: PID ${chosen.pid} dir ${chosen.dir}`);
       this.sessionId = path.basename(chosen.dir);
       this.ipcDir = chosen.dir;
@@ -108,6 +147,56 @@ export class CodesysLauncher implements ScriptExecutor {
       launcherLog.warn(`Adoption scan failed: ${err}`);
       return false;
     }
+  }
+
+  /**
+   * Send a trivial script to an existing session and wait briefly for the
+   * answer. Used before adopting a session to detect "alive but wedged"
+   * InoProShop instances.
+   *
+   * Why this exists: `process.kill(pid, 0)` only proves the OS process exists.
+   * It cannot tell whether the IDE's primary thread is still servicing the
+   * script engine. When InoProShop is stuck on a modal error dialog (observed:
+   * the InvalidObjectGuidException "对象 GUID ... 无效" storm), the watcher
+   * keeps polling, ready.signal stays on disk and the process stays alive —
+   * but every command marshals onto a blocked primary thread and never
+   * returns, so all tools time out and the MCP looks completely broken.
+   * Probing turns that silent hang into an explicit "skip this session".
+   *
+   * Unresponsive sessions have their ready.signal renamed to
+   * `ready.signal.unresponsive` so later startups don't pay the probe timeout
+   * again. The file is only renamed (never deleted) so it can be restored
+   * manually should the probe ever misjudge a merely-busy IDE.
+   */
+  private async probeSession(dir: string): Promise<{ ok: boolean; error?: string }> {
+    const sigPath = path.join(dir, 'ready.signal');
+    const client = new IpcClient({ baseDir: dir, ...DEFAULT_IPC_CONFIG });
+    let reason = 'no response';
+    try {
+      await client.ensureDirectories();
+      const res: IpcResult = await client.sendCommand(
+        ADOPT_PROBE_SCRIPT,
+        ADOPT_PROBE_TIMEOUT_MS
+      );
+      if (res && res.success && res.output.includes('__MCP_ADOPT_PING_OK__')) {
+        return { ok: true };
+      }
+      reason = res
+        ? `probe script did not run (success=${res.success}, error=${(res.error || '').slice(0, 200)}, output=${(res.output || '').slice(0, 200)})`
+        : 'probe returned no result';
+    } catch (err) {
+      // Includes the IPC timeout thrown when the primary thread never answers.
+      reason = `probe failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    // Mark as unresponsive so we don't re-probe (and stall) on every start.
+    try {
+      fs.renameSync(sigPath, sigPath + '.unresponsive');
+      reason += ' [ready.signal renamed to .unresponsive]';
+    } catch {
+      // Best effort — renaming is an optimisation, not a requirement.
+    }
+    return { ok: false, error: reason };
   }
 
   /** Launch CODESYS with UI and watcher script */
@@ -245,23 +334,70 @@ export class CodesysLauncher implements ScriptExecutor {
       ...process.env,
       INOPROSHOP_MCP_PROFILE: this.config.profileName,
     };
-    // Spawn CODESYS detached with UI visible
-    this.process = spawn(this.config.codesysPath, codesysArgs, {
-      detached: true,
-      shell: false,
-      windowsHide: false,
-      stdio: 'ignore',
-      cwd: codesysDir,
-      env: launchEnv,
-    });
+    // Spawn CODESYS detached with UI visible.
+    // InoProShop.exe ships requireAdministrator: CreateProcess from a non-elevated
+    // Node fails with EACCES. Fall back to PowerShell Start-Process (ShellExecute),
+    // which can launch the elevated exe without wrapping the real PID in cmd.exe.
+    let spawned = false;
+    try {
+      this.process = spawn(this.config.codesysPath, codesysArgs, {
+        detached: true,
+        shell: false,
+        windowsHide: false,
+        stdio: 'ignore',
+        cwd: codesysDir,
+        env: launchEnv,
+      });
+      this.pid = this.process.pid ?? null;
+      spawned = this.pid != null;
+    } catch (spawnErr) {
+      launcherLog.warn(`Native spawn failed: ${spawnErr}`);
+      this.process = null;
+      this.pid = null;
+    }
+    if (!spawned || this.pid == null) {
+      const psArgs = [
+        '-NoProfile',
+        '-Command',
+        `Start-Process -FilePath ${JSON.stringify(this.config.codesysPath)} ` +
+          `-ArgumentList @(${codesysArgs.map((a) => JSON.stringify(a)).join(',')}) ` +
+          `-WorkingDirectory ${JSON.stringify(codesysDir)} -PassThru | Select-Object -ExpandProperty Id`,
+      ];
+      launcherLog.info(`Elevated fallback via PowerShell Start-Process`);
+      try {
+        const { execFileSync } = require('child_process');
+        const out = execFileSync('powershell.exe', psArgs, {
+          encoding: 'utf8',
+          timeout: 30_000,
+          windowsHide: true,
+          env: launchEnv,
+        }).trim();
+        const psPid = Number(out.split(/\r?\n/).filter(Boolean).pop());
+        if (!Number.isFinite(psPid) || psPid <= 0) {
+          throw new Error(`PowerShell Start-Process returned no PID (out=${JSON.stringify(out)})`);
+        }
+        this.pid = psPid;
+        // Keep a dummy ChildProcess so exit handlers don't crash; PID tracking
+        // uses process.kill(pid, 0) in isRunning().
+        this.process = spawn(process.execPath, ['-e', 'setTimeout(()=>{},1)'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        launcherLog.info(`CODESYS started via ShellExecute PID=${this.pid}`);
+      } catch (psErr) {
+        const err = `Failed to start InoProShop (native EACCES and PowerShell fallback): ${psErr}`;
+        this.setState('error');
+        this.lastError = err;
+        throw new Error(err);
+      }
+    }
 
-    this.pid = this.process.pid ?? null;
-    this.process.unref();
+    this.process?.unref();
 
     launcherLog.info(`CODESYS spawned with PID ${this.pid}`);
 
     // Handle process exit
-    this.process.on('exit', (code) => {
+    this.process?.on('exit', (code) => {
       launcherLog.warn(`CODESYS process exited with code ${code}`);
       if (this.state !== 'stopping') {
         this.lastError = `CODESYS exited unexpectedly (code ${code})`;

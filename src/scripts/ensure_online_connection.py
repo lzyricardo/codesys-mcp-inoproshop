@@ -45,6 +45,28 @@
 #   - V2 is not supported (no scriptengine.online).
 
 
+def _is_stack_empty(msg):
+    """Detect the CODESYS 'Stack empty' executor error across locales.
+
+    In English-locale CODESYS the exception text is 'Stack empty'. In
+    Chinese-locale InoProShop (the user's config) it is '堆栈为空'. The
+    original check only matched the English substring, so on a Chinese
+    install create_online_application raised '堆栈为空', the direct-call
+    branch treated it as a *genuine* error, and the ExecuteSource
+    fallback (which actually fixes the empty-stack problem) was never
+    tried -- every online tool (login/read/write/download/start/stop/
+    monitor) failed outright. Match both forms (and a couple of other
+    common localizations) so the workaround engages everywhere.
+    """
+    m = str(msg)
+    return (
+        'Stack empty' in m
+        or '堆栈为空' in m
+        or 'スタックが空' in m
+        or 'Pila vac' in m
+    )
+
+
 def _get_online_executor():
     """Resolve scriptengine.online._executor via reflection.
     Returns the executor object (an IScriptExecutor with
@@ -278,7 +300,7 @@ def ensure_online_connection(primary_project):
             return oa, target_app
     except Exception as direct_err:
         msg = str(direct_err)
-        if 'Stack empty' not in msg:
+        if not _is_stack_empty(msg):
             # Genuine error (auth/network/version/...). Surface as-is.
             raise RuntimeError(
                 "create_online_application failed for '%s': %s. For "
@@ -286,7 +308,7 @@ def ensure_online_connection(primary_project):
                 "first; for a real PLC, ensure the gateway/address is "
                 "set on the device." % (app_name, direct_err)
             )
-        print("DEBUG: Stack empty on direct call; falling back to ExecuteSource")
+        print("DEBUG: Stack empty on direct call (locale-aware match); falling back to ExecuteSource")
 
     # 2. ExecuteSource fallback. Drives the executor lifecycle so
     #    the inner source sees a populated _executionStack.

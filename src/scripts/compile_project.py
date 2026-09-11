@@ -228,6 +228,24 @@ try:
     #   - application: clean() + build() + generate_code() on the app node
     #   - library:     Check-all-Pool-Objects path (no Application exists)
     build_invoked = False
+    last_build_err = None
+    last_gen_err = None
+
+    def _looks_like_object_store_corruption(err):
+        """Heuristic for the profile/version-mismatch failure mode.
+
+        When a project saved under one InoProShop profile (e.g. V1.9.1.6) is
+        opened under another (e.g. V1.10.0.3) with version updates suppressed,
+        the live object store ends up with a stale Application GUID and the
+        language-model build throws
+        'InvalidObjectGuidException: 对象 GUID ... 无效' (or the English
+        'Invalid object GUID'). This is NOT a project-file corruption and NOT
+        an MCP bug -- it's a profile mismatch. Surface an actionable message
+        instead of a generic 'no compile entry point' TypeError.
+        """
+        s = str(err)
+        return ('InvalidObjectGuid' in s or '对象 GUID' in s or 'Invalid object guid' in s.lower()
+                or 'invalidobjectguid' in s.lower())
 
     if project_kind == "application":
         # Force a full rebuild by invalidating any precompile cache. Bigger
@@ -257,6 +275,7 @@ try:
                 print("DEBUG: build() executed for application '%s'." % app_name)
                 build_invoked = True
             except Exception as build_err:
+                last_build_err = build_err
                 print("WARN: build() raised: %s" % build_err)
         if hasattr(target_app, 'generate_code'):
             try:
@@ -264,6 +283,7 @@ try:
                 print("DEBUG: generate_code() executed for application '%s'." % app_name)
                 build_invoked = True
             except Exception as gen_err:
+                last_gen_err = gen_err
                 print("WARN: generate_code() raised: %s" % gen_err)
 
     elif project_kind == "library":
@@ -314,8 +334,24 @@ try:
                 print("WARN: pool-object iteration failed: %s" % iter_err)
 
     if not build_invoked:
+        corruption_hint = ""
+        if _looks_like_object_store_corruption(last_build_err) or _looks_like_object_store_corruption(last_gen_err):
+            corruption_hint = (
+                "\n\nThis is almost certainly a PROFILE/VERSION MISMATCH, not a "
+                "corrupt project file: the project was saved under one InoProShop "
+                "profile (e.g. V1.9.1.6) but is being built under another (e.g. "
+                "V1.10.0.3), and version updates were suppressed on open, leaving "
+                "the live object store with a stale Application GUID. Fix: open/"
+                "build the project under the SAME profile it was saved with (the "
+                "MCP's --codesys-profile must match the project's profile), or let "
+                "the IDE run a full version migration (open without suppressing "
+                "updates and re-save). The .project file on disk is fine."
+            )
         raise TypeError(
-            "Target '%s' (kind=%s) supports no known compile entry point." % (app_name, project_kind)
+            "Target '%s' (kind=%s) supports no known compile entry point. "
+            "build() error: %s; generate_code() error: %s.%s" % (
+                app_name, project_kind,
+                last_build_err, last_gen_err, corruption_hint)
         )
 
     # --- Collect messages from every compile category ---
